@@ -15,9 +15,6 @@ A zero-annotation, auto-configuring Spring Boot 3.x starter that transforms raw 
 - [Annotations](#annotations)
 - [Configuration Reference](#configuration-reference)
 - [Observability](#observability)
-- [HTTP / REST Integration](#http--rest-integration)
-- [gRPC Integration](#grpc-integration)
-- [Kafka Integration](#kafka-integration)
 - [Custom Classifiers](#custom-classifiers)
 - [Testing](#testing)
 - [Security Model](#security-model)
@@ -29,11 +26,13 @@ A zero-annotation, auto-configuring Spring Boot 3.x starter that transforms raw 
 Without this starter, a single unique-constraint violation can expose:
 
 - Raw `DataIntegrityViolationException` with the constraint name and table schema in the message
-- Stack traces leaking through HTTP responses
+- Stack traces leaking through to the presentation layer
 - Inconsistent retry logic copy-pasted across every repository
 - No Micrometer metrics or OTel span events
 
-Aegis intercepts every `@Repository` and `@Service` bean automatically, classifies the failure precisely, retries transient errors with exponential back-off, emits Micrometer counters and OpenTelemetry span events, and finally re-throws a clean domain exception that your REST/gRPC/Kafka layer maps to the correct wire format.
+Aegis intercepts every `@Repository` and `@Service` bean automatically, classifies the failure precisely, retries transient errors with exponential back-off, emits Micrometer counters and OpenTelemetry span events, and finally re-throws a clean domain exception.
+
+Crucially, **it forces no specific web, gRPC, or messaging response format**. Your application code simply catches these well-defined domain exceptions (`DataIntegrityException`, etc.) and handles them as it sees fit using its own transport-specific advice.
 
 ---
 
@@ -64,10 +63,149 @@ Domain exception thrown to caller:
   DataTimeoutException    │ DataUnavailableException│ DataAccessProgrammingException
   TransientDataOperationException
 
-REST layer:        DatabaseExceptionAdvice  →  RFC 7807 ProblemDetail
-gRPC layer:        DatabaseExceptionServerInterceptor  →  gRPC Status codes
-Kafka layer:       ResilientKafkaListenerErrorHandler  →  retry / DLT routing
+(Consumers are free to catch these exceptions in their own @ControllerAdvice, Interceptor, or Error Handler)
 ```
+
+---
+
+## Deep Dive: How It Works & Limitations
+
+Because Aegis deeply integrates with Spring AOP, it is useful to understand exactly how it handles common database lifecycle behaviors and where it might fall short.
+
+### Common Use Cases & Exception Handling
+
+Aegis natively parses a comprehensive suite of errors. Here are the core use cases and how Aegis tackles them:
+
+#### 1. Data Integrity Violations & The `@Transactional` Commit Boundary
+**Scenario**: Inserting a user where an email address triggers a database-level `UNIQUE` constraint violation.
+Often when using JPA or Hibernate, a call to `repository.save()` doesn't actually hit the database right away due to optimization and caching (the "lazy flush"). The `UNIQUE` constraint exception is instead thrown by the `@Transactional` wrapper during the **commit phase** as the method is exiting, often surfacing as a nested and tangled `TransactionSystemException`.
+
+```java
+@Service
+public class UserService {
+    @Transactional
+    public User registerUser(String email) {
+        // The unique constraint fault typically fires implicitly at method exit.
+        return repository.save(new User(email));
+    }
+}
+
+// In your calling layer (e.g. Controller):
+try {
+    userService.registerUser("duplicate@test.com");
+} catch (DataIntegrityException ex) {
+    if (ex.violationType() == DataIntegrityException.ViolationType.UNIQUE) {
+        return ResponseEntity.status(409).body("Email already exists.");
+    }
+}
+```
+**The Aegis Advantage**: Because Aegis explicitly forces its AOP precedence very high (`Ordered.LOWEST_PRECEDENCE - 200`), it sits *outside* the Spring `@Transactional` wrapper. When the transaction commit fails, the Aegis interceptor catches the tangled `TransactionSystemException`, extracts the root cause (the SQL Unique constraint), maps it to a `DataIntegrityException(UNIQUE)`, and safely hands it down to the caller, completely hiding the JPA delayed flush timings.
+
+#### 2. Transient Operations & Implicit Deadlocks
+**Scenario**: Two concurrent threads try to lock the same database rows in exact opposite orders. The database forcefully kills one transaction, producing a `DeadlockLoserDataAccessException` (SQL State `40P01`).
+
+```java
+@Service
+public class OrderService {
+    @Transactional
+    public void processOrder(Order order) {
+        // If thread A locks Payment then Inventory, 
+        // and thread B locks Inventory then Payment, a deadlock exception is thrown.
+        inventoryRepository.deduct(order.getItems());
+        paymentRepository.charge(order.getAmount());
+    }
+}
+```
+**The Aegis Advantage**: Instead of immediately returning a generic 500 error, Aegis identifies the deadlock as a `TransientDataOperationException`. Based on your `@RetryPolicy`, Aegis intercepts the exception, automatically applies a backoff window, and silently **re-executes the method**. If the retry succeeds, the consumer never knows the deadlock happened.
+
+#### 3. Optimistic Locking Conflicts
+**Scenario**: When utilizing JPA `@Version` optimistic locking, two isolated users update an identical resource simultaneously, triggering a `StaleObjectStateException` or `OptimisticLockingFailureException`.
+
+```java
+@Entity
+public class Product {
+    @Id private UUID id;
+    @Version private Long version; // Optimistic Lock marker
+    private int stock;
+}
+
+@Service
+public class InventoryService {
+    @Transactional
+    public void updateStock(UUID productId, int newStock) {
+        Product p = repository.findById(productId).orElseThrow();
+        p.setStock(newStock);
+        // If the database version advanced since findById(), JPA throws here.
+        repository.save(p);
+    }
+}
+
+// In your calling layer (e.g. Controller), manually throw to user:
+try {
+    inventoryService.updateStock(id, 5);
+} catch (DataConflictException ex) {
+    throw new ResponseStatusException(HttpStatus.CONFLICT, "Data modified by someone else. Please refresh.");
+}
+```
+**The Aegis Advantage**: Aegis strictly distinguishes between transient lock delays and optimistic cache staleness. Stale entities are mapped accurately to a `DataConflictException` (`CONFLICT`) which is explicitly **non-retryable**. Trying to retry an optimistic lock blindly creates an infinite loop; Aegis knows this and predictably skips the retry logic, forcing the consumer to handle pulling fresh state.
+
+#### 4. The "Missing Data" Matrix
+**Scenario**: Trying to fetch a lazy proxy with `getReferenceById()` throws a deep `EntityNotFoundException`. Or, using a `JdbcTemplate` to fetch a single object for a missing record throws an `EmptyResultDataAccessException`.
+
+```java
+@Service
+public class ReportService {
+    public Report getReport(UUID id) {
+        // Without Aegis, this throws a JPA EntityNotFoundException
+        // Aegis intercepts and transforms it to DataNotFoundException
+        return reportRepository.getReferenceById(id);
+    }
+}
+```
+**The Aegis Advantage**: Web and routing layers shouldn't need to know the database mapping engine used underneath. Aegis neatly collapses *all* vendor-specific persistence missing-data exceptions into a single consistent `DataNotFoundException`.
+
+#### 5. Network Downtime & Connection Exhaustion
+**Scenario**: A momentary routing blip causes the database to drop connections, or the Hikari Connection Pool hits maximum capacity. The system throws a `CannotGetJdbcConnectionException`.
+
+```java
+@Service
+public class SyncService {
+    public void executeBatchSync() {
+        // If DB is offline, Hikari fails to obtain a connection.
+        // Aegis intercepts, wraps as DataUnavailableException,
+        // and retries using exponential back-off hoping the DB recovers.
+        repository.saveAll(fetchNewData());
+    }
+}
+```
+**The Aegis Advantage**: Aegis marks this correctly as a `DataUnavailableException` (`UNAVAILABLE`). Because it knows connection exhaustion is usually a spike, this exception type invokes exponential backoff retry behaviour automatically, smoothing out instantaneous latency blips before throwing structural errors.
+
+#### 6. Programming Faults & Bad Deployments
+**Scenario**: Developers merge malformed SQL, or try to iterate over a Lazy Collection outside a valid session bounds (`LazyInitializationException`). 
+
+```java
+@Service
+public class ExportService {
+    public void exportData(UUID userId) {
+        User u = repository.findWithoutJoiningRoles(userId);
+        
+        // Accessing a detached lazy collection outside an active session
+        // throws LazyInitializationException.
+        // Aegis intercepts and throws DataAccessProgrammingException immediately!
+        int roleCount = u.getRoles().size(); 
+    }
+}
+```
+**The Aegis Advantage**: Mapped as a `DataAccessProgrammingException` (`PROGRAMMING_ERROR`). Aegis knows retrying a syntax bug is hopeless, aborting instantly. It also triggers `ERROR` log severity bindings differently from transient faults (which are `WARN`), ensuring observability tools immediately trigger critical deployment alerts.
+
+### Limitations & Gotchas
+
+Since Aegis relies on standard Spring AOP proxies, there are certain scenarios where it will **not** work or requires care:
+
+1. **Self-Invocation Bypasses Constraints:** If a `@Service` bean calls one of its own inner methods natively (e.g., `this.updateSomething()`), the call bypasses the Spring Proxy completely. Therefore, Aegis will not intercept or map the database exceptions originating from that inner call. Ensure resilience mappings are happening across proper bean boundaries.
+2. **Public Methods Only:** The automated AOP pointcuts generally only intercept `public` method signatures. Internal, protected, or package-private database calls will leak raw exceptions. 
+3. **Double Advice Conflict:** If your `@Repository` or `@Service` classes are already highly advised or managed using drastically custom transaction boundaries or specialized `TransactionManager`s, Aegis might not sit outside your transaction boundary as seamlessly. 
+4. **Transaction Rollback Expectations:** If Aegis *retries* an operation, it re-invokes the entire target method. If that method initiates a nested, dirty database state that wasn't rolled back cleanly before the retry triggers, you may experience collateral side effects. Always ensure that the operations Aegis intends to retry are functionally idempotent or safely bounded within cleanly rolling-back transaction boundaries.
 
 ---
 
@@ -123,17 +261,17 @@ All domain exceptions extend `DataOperationException`, which carries three diagn
 | `operation`  | Method name that triggered the failure       |
 | `repository` | Simple class name of the bean                |
 
-### Exception types and default HTTP/gRPC mapping
+### Exception types and characteristics
 
-| Exception                         | Category             | Retried | HTTP  | gRPC                   |
-|-----------------------------------|----------------------|---------|-------|------------------------|
-| `DataIntegrityException`          | `INTEGRITY_*`        | No      | 409   | `ALREADY_EXISTS` / `FAILED_PRECONDITION` |
-| `DataNotFoundException`           | `NOT_FOUND`          | No      | 404   | `NOT_FOUND`            |
-| `DataConflictException`           | `CONFLICT`           | No      | 409   | `ABORTED`              |
-| `DataTimeoutException`            | `TIMEOUT`            | Yes     | 504   | `DEADLINE_EXCEEDED`    |
-| `DataUnavailableException`        | `UNAVAILABLE`        | Yes     | 503   | `UNAVAILABLE`          |
-| `TransientDataOperationException` | `TRANSIENT`          | Yes     | 503   | `UNAVAILABLE`          |
-| `DataAccessProgrammingException`  | `PROGRAMMING_ERROR`  | No      | 500   | `INTERNAL`             |
+| Exception                         | Category             | Retried |
+|-----------------------------------|----------------------|---------|
+| `DataIntegrityException`          | `INTEGRITY_*`        | No      |
+| `DataNotFoundException`           | `NOT_FOUND`          | No      |
+| `DataConflictException`           | `CONFLICT`           | No      |
+| `DataTimeoutException`            | `TIMEOUT`            | Yes     |
+| `DataUnavailableException`        | `UNAVAILABLE`        | Yes     |
+| `TransientDataOperationException` | `TRANSIENT`          | Yes     |
+| `DataAccessProgrammingException`  | `PROGRAMMING_ERROR`  | No      |
 
 `DataIntegrityException` additionally exposes a `ViolationType` enum:
 
@@ -312,94 +450,6 @@ Log levels by category:
 - `PROGRAMMING_ERROR` → `ERROR`
 - Retried failures → `WARN`
 - All others → `INFO`
-
----
-
-## HTTP / REST Integration
-
-`DatabaseExceptionAdvice` (`@RestControllerAdvice`) maps every domain exception to an **RFC 7807 `ProblemDetail`** response. It is auto-registered.
-
-### Response shape
-
-```json
-{
-  "type": "https://aegis.io/problems/db/integrity-violation",
-  "title": "Integrity violation",
-  "status": 409,
-  "detail": "A resource with these values already exists.",
-  "errorCode": "INTEGRITY_VIOLATION",
-  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "repository": "ProductRepository",
-  "operation": "save"
-}
-```
-
-**Security invariants:** no SQL text, constraint names, schema names, or stack traces reach the client.
-
-### Status mapping
-
-| Exception                        | HTTP Status |
-|----------------------------------|-------------|
-| `DataNotFoundException`          | 404         |
-| `DataConflictException`          | 409         |
-| `DataIntegrityException`         | 409         |
-| `DataTimeoutException`           | 504         |
-| `DataUnavailableException`       | 503         |
-| `TransientDataOperationException`| 503         |
-| `DataAccessProgrammingException` | 500         |
-
----
-
-## gRPC Integration
-
-`DatabaseExceptionServerInterceptor` converts domain exceptions to gRPC `Status` codes before they reach the wire. Register it as a global server interceptor (e.g. via `@GrpcGlobalServerInterceptor` in `grpc-spring-boot-starter`):
-
-```java
-@Bean
-@GrpcGlobalServerInterceptor
-public DatabaseExceptionServerInterceptor dbExceptionInterceptor() {
-    return new DatabaseExceptionServerInterceptor();
-}
-```
-
-### Status mapping
-
-| Domain Exception                 | gRPC Status               | Notes                                    |
-|----------------------------------|---------------------------|------------------------------------------|
-| `DataNotFoundException`          | `NOT_FOUND`               |                                          |
-| `DataIntegrityException` (UNIQUE)| `ALREADY_EXISTS`          |                                          |
-| `DataIntegrityException` (other) | `FAILED_PRECONDITION`     |                                          |
-| `DataConflictException`          | `ABORTED`                 |                                          |
-| `TransientDataOperationException`| `UNAVAILABLE`             | `grpc-retry-pushback-ms: 1000` trailer   |
-| `DataUnavailableException`       | `UNAVAILABLE`             | `grpc-retry-pushback-ms: 1000` trailer   |
-| `DataTimeoutException`           | `DEADLINE_EXCEEDED`       |                                          |
-| `DataAccessProgrammingException` | `INTERNAL`                | No detail exposed                        |
-
----
-
-## Kafka Integration
-
-`ResilientKafkaListenerErrorHandler` routes Kafka consumer failures based on domain exception semantics:
-
-| Failure type                         | Action                                              |
-|--------------------------------------|-----------------------------------------------------|
-| Transient / timeout / unavailable    | Re-throw — container's retry / DLT config takes over|
-| `DataNotFoundException`              | Log + skip (poison pill)                            |
-| `DataIntegrityException`             | Log + skip (poison pill)                            |
-| `DataAccessProgrammingException`     | Log + re-throw for investigation                    |
-| Unknown                              | Log + re-throw                                      |
-
-Register on a `@KafkaListener`:
-
-```java
-@Bean
-public ResilientKafkaListenerErrorHandler resilientKafkaListenerErrorHandler() {
-    return new ResilientKafkaListenerErrorHandler();
-}
-
-@KafkaListener(topics = "orders", errorHandler = "resilientKafkaListenerErrorHandler")
-public void consume(OrderEvent event) { ... }
-```
 
 ---
 

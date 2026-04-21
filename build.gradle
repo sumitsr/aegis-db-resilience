@@ -26,7 +26,6 @@ repositories {
     mavenCentral()
 }
 
-def grpcVersion = '1.65.0'
 
 dependencies {
     // ── Core Spring Boot ──
@@ -48,15 +47,6 @@ dependencies {
     // ── Retry ──
     api 'org.springframework.retry:spring-retry'
 
-    // ── Web (optional — needed by DatabaseExceptionAdvice) ──
-    compileOnly 'org.springframework.boot:spring-boot-starter-web'
-
-    // ── Kafka (optional) ──
-    compileOnly 'org.springframework.kafka:spring-kafka'
-
-    // ── gRPC (optional) ──
-    compileOnly "io.grpc:grpc-api:${grpcVersion}"
-    compileOnly "io.grpc:grpc-stub:${grpcVersion}"
 
     // ── Validation ──
     api 'org.springframework.boot:spring-boot-starter-validation'
@@ -68,9 +58,6 @@ dependencies {
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.postgresql:postgresql'
     testImplementation 'com.h2database:h2'
-    testImplementation 'org.springframework.kafka:spring-kafka'
-    testImplementation "io.grpc:grpc-api:${grpcVersion}"
-    testImplementation "io.grpc:grpc-stub:${grpcVersion}"
 }
 
 tasks.named('test') {

@@ -6,7 +6,6 @@ import io.aegis.db.resilience.classification.DatabaseExceptionClassifier;
 import io.aegis.db.resilience.classification.DefaultDatabaseExceptionClassifier;
 import io.aegis.db.resilience.observability.DatabaseOperationMetrics;
 import io.aegis.db.resilience.retry.RetryTemplateFactory;
-import io.aegis.db.resilience.web.DatabaseExceptionAdvice;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.aop.aspectj.AspectJExpressionPointcutAdvisor;
 import org.springframework.beans.factory.ObjectProvider;
@@ -111,12 +110,6 @@ public class DatabaseResilienceAutoConfiguration {
         advisor.setAdvice(interceptor);
         advisor.setOrder(Ordered.LOWEST_PRECEDENCE - 200);
         return advisor;
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public DatabaseExceptionAdvice databaseExceptionAdvice() {
-        return new DatabaseExceptionAdvice();
     }
 
     private String buildBasePackageExpression(List<String> packages) {

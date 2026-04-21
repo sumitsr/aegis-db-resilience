@@ -132,10 +132,15 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
                     ExceptionCategory.NOT_FOUND, false);
         }
 
+        // Timeout
+        if (t instanceof QueryTimeoutException) {
+            return timeout(t, sqlState, errorCode, operation, repository);
+        }
+
         // Optimistic lock / concurrency conflict (non-retryable at infra layer)
+        // explicitly check for optimistic lock failures to prevent them from falling into TransientDataAccessException
         if (t instanceof OptimisticLockingFailureException
                 || t instanceof ObjectOptimisticLockingFailureException
-                || t instanceof ConcurrencyFailureException
                 || t instanceof StaleObjectStateException) {
             return new ClassificationResult(
                     DataConflictException.of(t, sqlState, errorCode, operation, repository),
@@ -143,18 +148,12 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
         }
 
         // Transient / retryable
+        // Note: ConcurrencyFailureException (like DeadlockLoser) is a TransientDataAccessException
         if (t instanceof TransientDataAccessException
                 || t instanceof RecoverableDataAccessException
                 || t instanceof CannotAcquireLockException
-                || t instanceof DeadlockLoserDataAccessException
-                || t instanceof PessimisticLockingFailureException
                 || t instanceof LockAcquisitionException) {
             return transient_(t, sqlState, errorCode, operation, repository);
-        }
-
-        // Timeout
-        if (t instanceof QueryTimeoutException) {
-            return timeout(t, sqlState, errorCode, operation, repository);
         }
 
         // Connectivity / pool exhaustion
@@ -221,6 +220,10 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
             TransactionSystemException tse, String sqlState, int errorCode,
             String operation, String repository) {
         Throwable root = tse.getRootCause();
+        if (root == null || root == tse) {
+            root = tse.getApplicationException();
+        }
+
         if (root instanceof ConstraintViolationException cve) {
             // Treat as integrity violation — type GENERIC because no SQLState is available
             return new ClassificationResult(
