@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DB Resilience Starter — complete configuration reference
+# All values shown are the built-in defaults.
+# ─────────────────────────────────────────────────────────────────────────────
+
+aegis:
+  db:
+    resilience:
+
+      # Set to false to disable the automatic global advisor.
+      # Individual @ResilientRepository beans are still covered by the AspectJ aspect.
+      auto-apply: true
+
+      # Restrict auto-apply to specific packages. Empty = entire application context.
+      # Recommended in large monorepos to avoid advising unrelated beans.
+      base-packages:
+        # - com.example.orders
+        # - com.example.inventory
+
+      retry:
+        # Total attempts, including the first (not additional retries).
+        max-attempts: 3
+
+        # Initial backoff before the second attempt.
+        backoff-ms: 200
+
+        # Upper bound on backoff after exponential growth.
+        max-backoff-ms: 2000
+
+        # Exponential growth factor applied to backoff-ms each attempt.
+        multiplier: 2.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-environment overrides (example)
+# ─────────────────────────────────────────────────────────────────────────────
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+
+aegis:
+  db:
+    resilience:
+      retry:
+        max-attempts: 5
+        backoff-ms: 500
+        max-backoff-ms: 10000
+        multiplier: 2.5
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+
+aegis:
+  db:
+    resilience:
+      retry:
+        # Prevent tests from hanging on retry backoff
+        max-attempts: 1
+        backoff-ms: 0
+        max-backoff-ms: 0
+        multiplier: 1.0
