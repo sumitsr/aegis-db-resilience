@@ -1,0 +1,78 @@
+plugins {
+    id 'java'
+    id 'java-library'
+    id 'org.springframework.boot' version '3.3.5' apply false
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'io.aegis'
+version = '1.0.0-SNAPSHOT'
+description = 'Zero-annotation database resilience layer for Spring Boot 3.x'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencyManagement {
+    imports {
+        mavenBom 'org.springframework.boot:spring-boot-dependencies:3.3.5'
+        mavenBom 'io.opentelemetry:opentelemetry-bom:1.39.0'
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+def grpcVersion = '1.65.0'
+
+dependencies {
+    // ── Core Spring Boot ──
+    api 'org.springframework.boot:spring-boot-autoconfigure'
+    annotationProcessor 'org.springframework.boot:spring-boot-autoconfigure-processor'
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    // ── AOP ──
+    api 'org.springframework.boot:spring-boot-starter-aop'
+
+    // ── Data / JPA ──
+    api 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // ── Observability ──
+    api 'org.springframework.boot:spring-boot-starter-actuator'
+    api 'io.micrometer:micrometer-registry-prometheus'
+    api 'io.opentelemetry:opentelemetry-api'
+
+    // ── Retry ──
+    api 'org.springframework.retry:spring-retry'
+
+    // ── Web (optional — needed by DatabaseExceptionAdvice) ──
+    compileOnly 'org.springframework.boot:spring-boot-starter-web'
+
+    // ── Kafka (optional) ──
+    compileOnly 'org.springframework.kafka:spring-kafka'
+
+    // ── gRPC (optional) ──
+    compileOnly "io.grpc:grpc-api:${grpcVersion}"
+    compileOnly "io.grpc:grpc-stub:${grpcVersion}"
+
+    // ── Validation ──
+    api 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ── Test ──
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:postgresql'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.postgresql:postgresql'
+    testImplementation 'com.h2database:h2'
+    testImplementation 'org.springframework.kafka:spring-kafka'
+    testImplementation "io.grpc:grpc-api:${grpcVersion}"
+    testImplementation "io.grpc:grpc-stub:${grpcVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

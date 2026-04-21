@@ -1,0 +1,32 @@
+# Build output
+build/
+target/
+
+# Gradle wrapper cache (keep the jar and properties, ignore downloaded dists)
+.gradle/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+
+# Compiled class files
+*.class
+
+# Package files
+*.jar
+*.war
+*.ear
+!gradle/wrapper/gradle-wrapper.jar
+
+# Logs
+*.log
+
+# Spring Boot devtools restart trigger
+.reloadtrigger
