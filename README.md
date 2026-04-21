@@ -75,10 +75,18 @@ Kafka layer:       ResilientKafkaListenerErrorHandler  →  retry / DLT routing
 
 ### 1. Add the dependency
 
+**Gradle**
+
+```groovy
+implementation 'io.aegis:aegis-db-resilience:1.0.0-SNAPSHOT'
+```
+
+**Maven**
+
 ```xml
 <dependency>
     <groupId>io.aegis</groupId>
-    <artifactId>db-resilience-starter</artifactId>
+    <artifactId>aegis-db-resilience</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -86,6 +94,21 @@ Kafka layer:       ResilientKafkaListenerErrorHandler  →  retry / DLT routing
 ### 2. That's it
 
 The starter auto-configures itself via Spring Boot's `AutoConfiguration` mechanism. Every `@Repository` and `@Service` bean in your application context is automatically covered. No annotations, no XML, no extra `@EnableXxx`.
+
+### Building from source
+
+Requirements: JDK 21+, no local Gradle installation needed (wrapper included).
+
+```bash
+git clone https://github.com/sumitsr/aegis-db-resilience.git
+cd aegis-db-resilience
+./gradlew build               # compile + unit tests
+./gradlew test                # all tests including Testcontainers IT (requires Docker)
+./gradlew jar                 # produces build/libs/aegis-db-resilience-*.jar
+```
+
+> **JDK note:** the Gradle daemon is pinned to JDK 21 via `gradle.properties`
+> (`org.gradle.java.home`). Update that path if your JDK 21 is installed elsewhere.
 
 ---
 
