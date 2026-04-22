@@ -8,6 +8,8 @@ A zero-annotation, auto-configuring Spring Boot 3.x starter that transforms raw 
 
 - [Why Aegis?](#why-aegis)
 - [Architecture Overview](#architecture-overview)
+- [Design & Core Philosophy](#design--core-philosophy)
+- [Functional Error Handling (Vavr)](#functional-error-handling-vavr)
 - [Getting Started](#getting-started)
 - [Exception Hierarchy](#exception-hierarchy)
 - [Exception Classification](#exception-classification)
@@ -65,6 +67,71 @@ Domain exception thrown to caller:
 
 (Consumers are free to catch these exceptions in their own @ControllerAdvice, Interceptor, or Error Handler)
 ```
+
+---
+
+## Design & Core Philosophy
+
+The Aegis Database Resilience Library is designed to solve a fundamental problem in modern microservices: **Database faults are inevitable, but their handling shouldn't clutter your business logic.**
+
+The core idea is to transform "raw" database errors—which are often messy, vendor-specific, and hard to inspect—into **clean, classified, and actionable domain objects** while providing automated resilience.
+
+### 1. Functional "Safety Net" (Vavr Integration)
+Aegis natively supports **functional error handling**. Instead of throwing exceptions that bubble up and crash the stack, Aegis allows your methods to return an `Either<DataOperationException, T>`.
+- **The Idea**: Treat errors as data. If a database operation fails, the Interceptor catches it and returns the error on the `Left` side of the `Either`.
+- **Benefit**: No more `try-catch` blocks. You can use standard functional patterns like `.map()`, `.peekLeft()`, or `.getOrElse()` to handle errors gracefully.
+
+### 2. Exception Taxonomy over Message Matching
+Raw `SQLException` messages change between database versions and vendors. Aegis uses a multi-stage **Classifier** to map these into a stable hierarchy:
+- `DataConflictException` (Optimistic locking)
+- `DataIntegrityException` (Unique/FK/Not-Null violations)
+- `TransientDataOperationException` (Deadlocks/Temporary lock timeouts)
+- `DataUnavailableException` (Connectivity/Pool exhaustion)
+- `DataNotFoundException` (Record missing)
+
+### 3. Transparent AOP Resilience
+The API uses Spring AOP to apply logic without changing your code:
+- **Explicit**: Use `@ResilientRepository` on specific classes.
+- **Implicit**: Use `aegis.db.resilience.auto-apply=true` to automatically protect every `@Repository` in your project.
+- **Granular Control**: Use `@RetryPolicy` at the method level to customize how many times to retry specific errors.
+
+---
+
+### How it Works: The Execution Flow
+
+```mermaid
+sequenceDiagram
+    participant User as Consumer
+    participant Interceptor as Aegis Interceptor
+    participant Target as Repository/Service
+    participant Classifier as Exception Classifier
+    participant Metrics as Observability (Metrics/Spans)
+
+    User->>Interceptor: invoke(method)
+    loop Retry Loop
+        Interceptor->>Target: proceed()
+        alt Success
+            Target-->>Interceptor: result (T or Either.Right)
+        else DB Exception Thrown
+            Target-->>Classifier: catch(Throwable)
+            Classifier-->>Classifier: Identify SQLState/Vendor Code
+            Classifier-->>Interceptor: return DataOperationException
+            Interceptor->>Metrics: record(Ex, Repository, Method)
+            Interceptor-->>Interceptor: Evaluate RetryPolicy
+        end
+    end
+    
+    Interceptor-->>User: return Object Or Either.Left(Ex)
+```
+
+### Key Components
+
+*   **`DatabaseResilienceInterceptor`**: The "brain" of the system. It manages the retry loop, coordinates classification, and handles the functional return type conversion.
+*   **`DefaultDatabaseExceptionClassifier`**: The "translator." It uses Spring's `SQLExceptionTranslator` and SQLState matching to ensure the library is database-agnostic.
+*   **`DatabaseOperationMetrics`**: The "eye." It automatically publishes Micrometer gauges and OpenTelemetry spans for every fault.
+
+### Why use this instead of standard Spring `@Retryable`?
+Aegis is **Database-Aware**. It knows the difference between a `Deadlock` (which should be retried) and a `Unique Violation` (which should never be retried). It provides the exact context of the database failure within its domain exceptions, making it far superior for data-intensive applications.
 
 ---
 
