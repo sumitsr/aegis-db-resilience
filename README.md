@@ -60,7 +60,11 @@ In standard Spring Boot, a single database failure (like a unique-constraint vio
 > [!IMPORTANT]
 > **Zero Leakage Policy**: Aegis ensures that no raw SQL details or internal schema names ever escape to the client. It forces a clean separation between database faults and transport responses.
 
+> [!NOTE]
+> **Etymology**: In Greek mythology, the **Aegis** (Ancient Greek: αἰγίς) was the shield or breastplate of Zeus and Athena—a powerful symbol of protection and invulnerability. This library serves as that shield for your database layer, protecting your application from the "lightning bolts" of unexpected database failures.
+
 ---
+
 
 ## Architecture Overview
 
