@@ -209,6 +209,64 @@ Since Aegis relies on standard Spring AOP proxies, there are certain scenarios w
 
 ---
 
+## Functional Error Handling (Vavr)
+
+Aegis now natively supports functional, monadic error handling using the **Vavr** library (`io.vavr:vavr`). 
+
+Instead of waiting for an exception to be thrown out of the call stack (which forces consumers to wrap your services in ugly `try/catch` blocks or use global `@ControllerAdvice`), you can simply specify your Service or Repository method to return an `Either<DataOperationException, T>`. 
+
+Aegis will auto-detect the method signature via Reflection. If an exception is intercepted inside the proxy (or from a deferred `@Transactional` commit), Aegis quietly suppresses the throw and natively maps the response into an `Either.left(DataIntegrityException)`.
+
+**Example:**
+
+```java
+import io.vavr.control.Either;
+import io.aegis.db.resilience.domain.DataOperationException;
+
+@Service
+public class UserService {
+    private final UserRepository repository;
+    
+    @Transactional
+    public Either<DataOperationException, User> registerUser(String email) {
+        // Return Right assuming success.
+        // If a UNIQUE SQL constraint fails during the commit flush,
+        // Aegis intercepts it and safely converts it to Either.left(Ex).
+        return Either.right(repository.save(new User(email)));
+    }
+}
+
+// In the Caller, exception handling becomes purely functional!
+userService.registerUser("duplicate@test.com")
+    .peek(user -> System.out.println("Success! " + user.getId()))
+    .peekLeft(ex -> {
+        if (ex instanceof DataIntegrityException die) {
+            System.err.println("Database constraint uniquely flagged: " + die.violationType());
+        }
+    });
+```
+
+---
+
+## Prerequisites & Core Dependencies
+
+Before including Aegis in your project, ensure your environment meets the minimum requirements.
+
+### System Requirements
+- **Java 21+** (The project toolchain is strictly enforced at JDK 21)
+- **Spring Boot 3.3.x** or higher
+
+### Transitive Dependencies
+When you add the Aegis starter to your project, it will implicitly pull in the following required libraries (via Gradle `api` configurations). If you are adapting or compiling Aegis manually without its `build.gradle`, you MUST include these in your project:
+- `org.springframework.boot:spring-boot-starter-aop` (For evaluating interceptor bounds)
+- `org.springframework.boot:spring-boot-starter-data-jpa` (For persistence exception hierarchies)
+- `org.springframework.retry:spring-retry` (For exponential backoff mechanics)
+- `io.vavr:vavr` (For functional `Either` error handling)
+- `io.micrometer:micrometer-registry-prometheus` & `spring-boot-starter-actuator` (For recording operation metrics)
+- `io.opentelemetry:opentelemetry-api` (For span tracing on faults)
+
+---
+
 ## Getting Started
 
 ### 1. Add the dependency

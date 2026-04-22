@@ -48,6 +48,9 @@ dependencies {
     api 'org.springframework.retry:spring-retry'
 
 
+    // ── Functional Error Handling ──
+    api 'io.vavr:vavr:0.10.4'
+
     // ── Validation ──
     api 'org.springframework.boot:spring-boot-starter-validation'
 
