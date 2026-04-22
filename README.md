@@ -29,6 +29,7 @@
 ## 📖 Table of Contents
 
 - [🚀 Why Aegis?](#why-aegis)
+- [🛠️ Activation Modes](#-activation-modes)
 - [🏗️ Architecture Overview](#architecture-overview)
 - [💎 Design & Core Philosophy](#design--core-philosophy)
 - [⚖️ The Aegis Difference](#-the-aegis-difference)
@@ -62,6 +63,38 @@ In standard Spring Boot, a single database failure (like a unique-constraint vio
 
 > [!NOTE]
 > **Etymology**: In Greek mythology, the **Aegis** (Ancient Greek: αἰγίς) was the shield or breastplate of Zeus and Athena—a powerful symbol of protection and invulnerability. This library serves as that shield for your database layer, protecting your application from the "lightning bolts" of unexpected database failures.
+
+---
+
+## 🛠️ Activation Modes
+
+Aegis provides two distinct ways to protect your persistence layer, allowing you to choose between global automation and granular control.
+
+### 1. Zero-Annotation (Global Auto-Apply)
+By default, Aegis leverages Spring Boot's autoconfiguration to protect **every** bean annotated with `@Repository` or `@Service` in your application context.
+
+*   **Implicit Protection**: Once the dependency is added, the entire project is instantly covered.
+*   **How it Works**: A high-precedence AOP Advisor auto-discovers beans and applies the resilience pipeline.
+*   **Scoped Auto-Apply**: You can restrict global protection to specific packages via `application.yml`:
+    ```yaml
+    aegis.db.resilience.base-packages: [com.myapp.repo, com.myapp.service]
+    ```
+
+### 2. Granular Control (Annotation-Driven)
+For scenarios where you need an "opt-in" model or specific overrides, Aegis provides a rich annotation suite.
+
+*   **`@ResilientRepository`**: Activates the pipeline for a specific class (useful if `auto-apply` is disabled).
+*   **`@RetryPolicy`**: Allows you to customize or disable retry behaviour at the class or method level.
+
+```java
+@Repository
+@ResilientRepository(retryPolicy = @RetryPolicy(maxAttempts = 5)) // Custom override
+public class OrderRepository {
+
+    @RetryPolicy(disabled = true) // Explicitly disable resilience for this call
+    public void executeBulkCleanup() { ... }
+}
+```
 
 ---
 
