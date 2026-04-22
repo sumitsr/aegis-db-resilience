@@ -43,7 +43,10 @@
 - [📡 Observability](#observability)
 - [🧩 Custom Classifiers](#custom-classifiers)
 - [🧪 Testing](#testing)
+- [🛡️ Transaction Awareness](#-transaction-awareness)
+- [📂 Project Structure](#-project-structure)
 - [🛡️ Security Model](#security-model)
+- [📄 License](#-license)
 
 ---
 
@@ -810,7 +813,41 @@ assertThatThrownBy(() -> service.doSomething())
 ## Security Model
 
 - **No SQL text or schema names** reach the client via HTTP or gRPC responses. Only stable `errorCode` tokens are returned.
-- `DataAccessProgrammingException` responses always use the generic message `"An internal error occurred. Support has been notified."` — no details exposed.
+- `DataAccessProgrammingException` responses always use the generic message `"Database programming error; requires immediate investigation"` — no vendor details exposed.
 - `traceId` is the only server-internal value included in responses; it is populated from MDC (`traceId` key set by OTel/Brave) and falls back to `"none"`.
 - SQLState codes are logged server-side only and are never included in HTTP response bodies.
 - The AOP interceptor applies `Ordered.LOWEST_PRECEDENCE - 200` to run after transaction management but before your application's exception handlers, ensuring every database exception passes through classification.
+
+---
+
+## 🛡️ Transaction Awareness
+
+Aegis is deeply aware of Spring's transaction lifecycle. It implements a "Safe Retry" policy:
+
+1.  **Boundary Logic**: By running at `LOWEST_PRECEDENCE - 200`, Aegis sits *outside* the `@Transactional` proxy. This allows it to catch `UnexpectedRollbackException` and other commit-time failures that are usually invisible to service-layer `try-catch` blocks.
+2.  **Poisoned Transactions**: If Aegis detects that it is being invoked *inside* an already active transaction, it automatically disables retry logic. This prevents attempting to retry operations on a "poisoned" connection, forcing the error to bubble up to the transaction boundary where it can be safely retried as a fresh unit of work.
+
+---
+
+## 📂 Project Structure
+
+```
+aegis-db-resilience/
+├── src/main/java/io/aegis/db/resilience/
+│   ├── annotation/       # @ResilientRepository, @RetryPolicy overrides
+│   ├── aspect/           # Core AOP Interceptor and AspectJ logic
+│   ├── autoconfigure/    # Spring Boot @AutoConfiguration and Properties
+│   ├── classification/   # SQLState and Exception mapping logic
+│   ├── domain/           # Domain Exception hierarchy (DataOperationException)
+│   ├── observability/    # Micrometer and OpenTelemetry integration
+│   └── retry/            # RetryTemplate creation and policy factory
+└── src/test/java/        # Comprehensive Integration and Unit tests
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2026 Sumit Srivastava.
