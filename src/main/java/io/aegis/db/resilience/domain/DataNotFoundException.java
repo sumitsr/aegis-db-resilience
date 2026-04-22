@@ -11,6 +11,14 @@ public final class DataNotFoundException extends DataOperationException {
         super(message, cause, sqlState, errorCode, operation, repository);
     }
 
+    /**
+     * Static factory for {@link DataNotFoundException}.
+     *
+     * @param cause      the original exception
+     * @param operation  the name of the repository operation
+     * @param repository the name of the repository
+     * @return a new DataNotFoundException
+     */
     public static DataNotFoundException of(
             Throwable cause, String operation, String repository) {
         return new DataNotFoundException(

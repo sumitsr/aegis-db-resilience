@@ -12,6 +12,16 @@ public final class TransientDataOperationException extends DataOperationExceptio
         super(message, cause, sqlState, errorCode, operation, repository);
     }
 
+    /**
+     * Static factory for {@link TransientDataOperationException}.
+     *
+     * @param cause     the original exception
+     * @param sqlState  the JDBC SQLState
+     * @param errorCode the vendor-specific error code
+     * @param operation the name of the repository operation
+     * @param repository the name of the repository
+     * @return a new TransientDataOperationException
+     */
     public static TransientDataOperationException of(
             Throwable cause, String sqlState, int errorCode,
             String operation, String repository) {

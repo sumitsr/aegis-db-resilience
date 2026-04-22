@@ -34,15 +34,31 @@ public abstract sealed class DataOperationException extends RuntimeException
         this.repository = repository;
     }
 
-    /** JDBC SQLState; may be {@code null} when unavailable. */
+    /**
+     * Returns the JDBC SQLState associated with this exception.
+     *
+     * @return the SQLState, or {@code null} if unavailable
+     */
     public String sqlState() { return sqlState; }
 
-    /** Vendor-specific error code; 0 when unavailable. */
+    /**
+     * Returns the vendor-specific error code associated with this exception.
+     *
+     * @return the error code, or {@code 0} if unavailable
+     */
     public int errorCode() { return errorCode; }
 
-    /** Repository method name where the failure occurred. */
+    /**
+     * Returns the name of the repository operation that failed.
+     *
+     * @return the name of the failed operation
+     */
     public String operation() { return operation; }
 
-    /** Simple class name of the originating repository/service bean. */
+    /**
+     * Returns the simple name of the repository where the failure occurred.
+     *
+     * @return the name of the repository
+     */
     public String repository() { return repository; }
 }

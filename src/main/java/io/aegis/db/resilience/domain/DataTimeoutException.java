@@ -11,6 +11,16 @@ public final class DataTimeoutException extends DataOperationException {
         super(message, cause, sqlState, errorCode, operation, repository);
     }
 
+    /**
+     * Static factory for {@link DataTimeoutException}.
+     *
+     * @param cause     the original exception
+     * @param sqlState  the JDBC SQLState
+     * @param errorCode the vendor-specific error code
+     * @param operation the name of the repository operation
+     * @param repository the name of the repository
+     * @return a new DataTimeoutException
+     */
     public static DataTimeoutException of(
             Throwable cause, String sqlState, int errorCode,
             String operation, String repository) {

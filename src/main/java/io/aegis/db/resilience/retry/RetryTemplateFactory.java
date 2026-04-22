@@ -11,6 +11,8 @@ import org.springframework.retry.support.RetryTemplate;
 
 import java.util.Map;
 
+import static io.vavr.API.*;
+
 /**
  * Builds {@link RetryTemplate} instances. Shared globally (one per default config) or
  * per-invocation when a {@link RetryPolicy} annotation overrides defaults.
@@ -19,11 +21,21 @@ public class RetryTemplateFactory {
 
     private final DatabaseResilienceProperties props;
 
+    /**
+     * Constructs a factory with the provided global properties.
+     *
+     * @param props the global configuration properties
+     */
     public RetryTemplateFactory(DatabaseResilienceProperties props) {
         this.props = props;
     }
 
-    /** Returns the globally configured template. Thread-safe; safe to share. */
+    /**
+     * Returns the globally configured {@link RetryTemplate}. 
+     * This template is thread-safe and safe to share across threads.
+     *
+     * @return the global retry template
+     */
     public RetryTemplate global() {
         return build(
                 props.getRetry().getMaxAttempts(),
@@ -34,40 +46,43 @@ public class RetryTemplateFactory {
     }
 
     /**
-     * Returns a template applying annotation overrides on top of the global defaults.
-     * Annotation value of {@code -1} means "use global default".
+     * Returns a {@link RetryTemplate} that applies annotation-level overrides 
+     * on top of the global defaults. An annotation value of {@code -1} signifies 
+     * that the global default should be used for that parameter.
+     *
+     * @param policy the retry policy annotation containing overrides
+     * @return a localized retry template
      */
     public RetryTemplate forPolicy(RetryPolicy policy) {
-        DatabaseResilienceProperties.RetryProperties defaults = props.getRetry();
-        return build(
-                policy.maxAttempts()  == -1  ? defaults.getMaxAttempts()  : policy.maxAttempts(),
-                policy.backoffMs()    == -1  ? defaults.getBackoffMs()    : policy.backoffMs(),
-                policy.maxBackoffMs() == -1  ? defaults.getMaxBackoffMs() : policy.maxBackoffMs(),
-                policy.multiplier()   == -1  ? defaults.getMultiplier()   : policy.multiplier()
-        );
+        return io.vavr.control.Option.of(props.getRetry())
+                .map(defaults -> build(
+                        policy.maxAttempts()  == -1  ? defaults.getMaxAttempts()  : policy.maxAttempts(),
+                        policy.backoffMs()    == -1  ? defaults.getBackoffMs()    : policy.backoffMs(),
+                        policy.maxBackoffMs() == -1  ? defaults.getMaxBackoffMs() : policy.maxBackoffMs(),
+                        policy.multiplier()   == -1  ? defaults.getMultiplier()   : policy.multiplier()
+                ))
+                .get();
     }
 
     private RetryTemplate build(
             int maxAttempts, long backoffMs, long maxBackoffMs, double multiplier) {
 
-        SimpleRetryPolicy retryPolicy = new SimpleRetryPolicy(
-                maxAttempts,
-                Map.of(
-                        TransientDataOperationException.class, true,
-                        DataTimeoutException.class,            true,
-                        DataUnavailableException.class,        true
-                ),
-                true  // traverse cause chain
-        );
-
-        ExponentialRandomBackOffPolicy backOff = new ExponentialRandomBackOffPolicy();
-        backOff.setInitialInterval(backoffMs);
-        backOff.setMaxInterval(maxBackoffMs);
-        backOff.setMultiplier(multiplier);
-
-        return RetryTemplate.builder()
-                .customPolicy(retryPolicy)
-                .customBackoff(backOff)
-                .build();
+        return io.vavr.control.Option.of(new ExponentialRandomBackOffPolicy())
+                .peek(backOff -> backOff.setInitialInterval(backoffMs))
+                .peek(backOff -> backOff.setMaxInterval(maxBackoffMs))
+                .peek(backOff -> backOff.setMultiplier(multiplier))
+                .map(backOff -> RetryTemplate.builder()
+                        .customPolicy(new SimpleRetryPolicy(
+                                maxAttempts,
+                                Map.of(
+                                        TransientDataOperationException.class, true,
+                                        DataTimeoutException.class,            true,
+                                        DataUnavailableException.class,        true
+                                ),
+                                true
+                        ))
+                        .customBackoff(backOff)
+                        .build())
+                .get();
     }
 }

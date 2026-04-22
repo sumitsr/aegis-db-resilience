@@ -22,6 +22,17 @@ public final class DataIntegrityException extends DataOperationException {
         this.violationType = violationType;
     }
 
+    /**
+     * Static factory for {@link DataIntegrityException}.
+     *
+     * @param cause         the original exception
+     * @param sqlState      the JDBC SQLState
+     * @param errorCode     the vendor-specific error code
+     * @param operation     the name of the repository operation
+     * @param repository    the name of the repository
+     * @param violationType the fine-grained sub-category
+     * @return a new DataIntegrityException
+     */
     public static DataIntegrityException of(
             Throwable cause, String sqlState, int errorCode,
             String operation, String repository, ViolationType violationType) {
@@ -30,5 +41,11 @@ public final class DataIntegrityException extends DataOperationException {
                 cause, sqlState, errorCode, operation, repository, violationType);
     }
 
+    /**
+     * Postgres/ANSI Code: Unique violation.
+     * Derived from the SQLState 23xxx family.
+     *
+     * @return the fine-grained sub-category of the integrity violation
+     */
     public ViolationType violationType() { return violationType; }
 }

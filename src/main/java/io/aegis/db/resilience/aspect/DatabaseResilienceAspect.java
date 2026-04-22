@@ -24,10 +24,23 @@ public class DatabaseResilienceAspect {
 
     private final DatabaseResilienceInterceptor interceptor;
 
+    /**
+     * Constructs the aspect with the shared interceptor.
+     *
+     * @param interceptor the interceptor containing the resilience logic
+     */
     public DatabaseResilienceAspect(DatabaseResilienceInterceptor interceptor) {
         this.interceptor = interceptor;
     }
 
+    /**
+     * Around advice that intercepts methods annotated with or within a class 
+     * annotated with {@code @ResilientRepository}.
+     *
+     * @param pjp the AspectJ proceeding join point
+     * @return the result of the invocation
+     * @throws Throwable if the underlying call or classification fails
+     */
     @Around("@within(io.aegis.db.resilience.annotation.ResilientRepository)" +
             " || @annotation(io.aegis.db.resilience.annotation.ResilientRepository)")
     public Object intercept(ProceedingJoinPoint pjp) throws Throwable {
