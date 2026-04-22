@@ -1,41 +1,64 @@
-# Aegis DB Resilience Starter
+<div align="center">
+  <img src="https://img.shields.io/badge/Aegis-DB_Resilience-2196F3?style=for-the-badge&logo=shield" alt="Aegis Logo" />
+  
+  # Aegis DB Resilience Starter
+  
+  **Zero-Annotation. Production-Grade. Bank-Level Resilience for Spring Boot 3.x.**
+  
+  [![Java 21](https://img.shields.io/badge/Java-21-orange?style=flat-square&logo=openjdk)](https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html)
+  [![Spring Boot 3.3+](https://img.shields.io/badge/Spring_Boot-3.3+-6DB33F?style=flat-square&logo=spring)](https://spring.io/projects/spring-boot)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+  [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=flat-square)](#)
+  [![Functional](https://img.shields.io/badge/Functional-Vavr-blueviolet?style=flat-square)](https://www.vavr.io/)
+  [![Observability](https://img.shields.io/badge/Observability-OTel_%26_Micrometer-blue?style=flat-square)](https://opentelemetry.io/)
 
-A zero-annotation, auto-configuring Spring Boot 3.x starter that transforms raw database exceptions into a clean domain exception hierarchy, adds intelligent retry with exponential back-off, and emits structured observability signals — all without changing a single line of your repository or service code.
-
----
-
-## Table of Contents
-
-- [Why Aegis?](#why-aegis)
-- [Architecture Overview](#architecture-overview)
-- [Design & Core Philosophy](#design--core-philosophy)
-- [Functional Error Handling (Vavr)](#functional-error-handling-vavr)
-- [Best Practices: Handling Exceptions](#best-practices-handling-exceptions)
-- [Getting Started](#getting-started)
-- [Exception Hierarchy](#exception-hierarchy)
-- [Exception Classification](#exception-classification)
-- [Retry Behaviour](#retry-behaviour)
-- [Annotations](#annotations)
-- [Configuration Reference](#configuration-reference)
-- [Observability](#observability)
-- [Custom Classifiers](#custom-classifiers)
-- [Testing](#testing)
-- [Security Model](#security-model)
+  A sophisticated, auto-configuring starter that transforms messy database failures into a clean domain exception hierarchy. It adds intelligent retry mechanics and professional-grade observability signals without requiring a single change to your existing repository or service code.
+</div>
 
 ---
 
-## Why Aegis?
+## ⚡ Features at a Glance
 
-Without this starter, a single unique-constraint violation can expose:
+| 🛡️ Resilience | 🧩 Functional | 📊 Observability | 🛠️ DX |
+| :--- | :--- | :--- | :--- |
+| **Intelligent Retry**: Exponential back-off tailored for database-specific transient faults. | **Monadic Errors**: Native support for Vavr `Either<Failure, Success>` patterns. | **Metrics First**: Automatic Micrometer counters and Prometheus-ready gauges. | **Zero Config**: Drop-in JAR that auto-discovers and protects every `@Repository`. |
+| **Fault Isolation**: Precise classification via SQLState and Vendor codes. | **Null Safety**: Strict enforcement of non-null contracts in exception data. | **Tracing**: Deep OpenTelemetry integration with span enrichment and events. | **Domain Taxonomy**: Stable hierarchy that hides vendor-specific leakages. |
 
-- Raw `DataIntegrityViolationException` with the constraint name and table schema in the message
-- Stack traces leaking through to the presentation layer
-- Inconsistent retry logic copy-pasted across every repository
-- No Micrometer metrics or OTel span events
+---
 
-Aegis intercepts every `@Repository` and `@Service` bean automatically, classifies the failure precisely, retries transient errors with exponential back-off, emits Micrometer counters and OpenTelemetry span events, and finally re-throws a clean domain exception.
+## 📖 Table of Contents
 
-Crucially, **it forces no specific web, gRPC, or messaging response format**. Your application code simply catches these well-defined domain exceptions (`DataIntegrityException`, etc.) and handles them as it sees fit using its own transport-specific advice.
+- [🚀 Why Aegis?](#why-aegis)
+- [🏗️ Architecture Overview](#architecture-overview)
+- [💎 Design & Core Philosophy](#design--core-philosophy)
+- [⚖️ The Aegis Difference](#-the-aegis-difference)
+- [🛠️ Built for Modern Infrastructure](#-built-for-modern-infrastructure)
+- [λ Functional Error Handling](#functional-error-handling-vavr)
+- [🏆 Best Practices](#best-practices-handling-exceptions)
+- [⚙️ Getting Started](#getting-started)
+- [📂 Exception Hierarchy](#exception-hierarchy)
+- [🔄 Retry Behaviour](#retry-behaviour)
+- [📝 Configuration Reference](#configuration-reference)
+- [📡 Observability](#observability)
+- [🧩 Custom Classifiers](#custom-classifiers)
+- [🧪 Testing](#testing)
+- [🛡️ Security Model](#security-model)
+
+---
+
+## 🚀 Why Aegis?
+
+In standard Spring Boot, a single database failure (like a unique-constraint violation) often leaks raw `SQLException` details or deep stack traces to the presentation layer. It lacks consistency in retry logic and often ignores critical observability needs.
+
+**Aegis transforms your persistence layer into a resilient fortress:**
+
+*   **Intercepts Automatically**: Every `@Repository` and `@Service` bean is protected via high-precedence AOP.
+*   **Classifies Precisely**: Maps vendor-specific mess to clean types like `DataIntegrityException` or `DataConflictException`.
+*   **Retries Intelligently**: Only retries transient errors (deadlocks, timeouts) using exponential back-off.
+*   **Emits Signals**: Publishes Micrometer counters and OTel span events for every single fault.
+
+> [!IMPORTANT]
+> **Zero Leakage Policy**: Aegis ensures that no raw SQL details or internal schema names ever escape to the client. It forces a clean separation between database faults and transport responses.
 
 ---
 
@@ -95,6 +118,44 @@ The API uses Spring AOP to apply logic without changing your code:
 - **Explicit**: Use `@ResilientRepository` on specific classes.
 - **Implicit**: Use `aegis.db.resilience.auto-apply=true` to automatically protect every `@Repository` in your project.
 - **Granular Control**: Use `@RetryPolicy` at the method level to customize how many times to retry specific errors.
+
+---
+
+## ⚖️ The Aegis Difference
+
+### Standard Spring (Messy)
+```java
+try {
+    repository.save(entity);
+} catch (TransactionSystemException e) {
+    // Digging through nested causes manually...
+    if (e.getRootCause() instanceof SQLException se && "23505".equals(se.getSQLState())) {
+        // Vendor-specific logic leaked into your service layer
+    }
+}
+```
+
+### With Aegis (Clean & Decoupled)
+```java
+try {
+    repository.save(entity);
+} catch (DataIntegrityException e) {
+    // Precise, typed, and vendor-neutral hierarchy
+    if (e.violationType() == ViolationType.UNIQUE) { ... }
+}
+```
+
+---
+
+## 🛠️ Built for Modern Infrastructure
+
+Aegis is engineered for high-performance, bank-grade applications using a premium tech stack:
+
+*   **☕ Java 21 Core**: Leverages Pattern Matching and modern syntax for high-speed exception classification.
+*   **λ Vavr Monads**: Enables "Railway Oriented Programming" for safer, more predictable error flows.
+*   **🛡️ High-Precedence AOP**: Tuned ordering ensures Aegis captures failures *outside* the transaction commit phase.
+*   **📊 Low-Overhead Metrics**: Powered by Micrometer and Prometheus for real-time fleet observability.
+*   **🌍 Cloud-Native Tracing**: Native OpenTelemetry integration for distributed tracing and fault analysis.
 
 ---
 
