@@ -104,6 +104,7 @@ public class DatabaseResilienceInterceptor implements MethodInterceptor {
                         "No classifier handled throwable: " + raw.getClass().getName(), raw));
     }
 
+    @SuppressWarnings("null")
     private RetryTemplate resolveRetryTemplate(MethodInvocation invocation) {
         return Option.of(invocation.getMethod())
                 .flatMap(m -> Option.of(AnnotationUtils.findAnnotation(m, RetryPolicy.class)))

@@ -89,6 +89,7 @@ class ResilientApplicationDemonstrationIT {
         User(String email, String name) { this.email = email; this.name = name; }
         public UUID getId() { return id; }
         public String getEmail() { return email; }
+        public String getName() { return name; }
     }
 
     @Repository

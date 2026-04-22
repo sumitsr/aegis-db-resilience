@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static io.vavr.API.*;
-import static io.vavr.Predicates.*;
+// removed Predicates import
 
 /**
  * Centralises all observability side-effects for a database failure:

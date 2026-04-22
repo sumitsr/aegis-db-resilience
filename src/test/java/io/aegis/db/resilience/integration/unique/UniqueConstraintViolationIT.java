@@ -3,7 +3,7 @@ package io.aegis.db.resilience.integration.unique;
 import io.aegis.db.resilience.domain.DataIntegrityException;
 import io.aegis.db.resilience.domain.DataNotFoundException;
 import io.aegis.db.resilience.domain.DataOperationException;
-import io.aegis.db.resilience.domain.TransientDataOperationException;
+import io.vavr.control.Option;
 import jakarta.persistence.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -131,6 +131,7 @@ class UniqueConstraintViolationIT {
         Product(String name, String sku) { this.name = name; this.sku = sku; }
         public UUID getId() { return id; }
         public String getSku() { return sku; }
+        public String getName() { return name; }
     }
 
     @Repository
@@ -154,9 +155,11 @@ class UniqueConstraintViolationIT {
         }
 
         @Transactional(readOnly = true)
+        @SuppressWarnings("null")
         public Product findOrThrow(UUID id) {
-            return repo.findById(id)
-                    .orElseThrow(() -> new EmptyResultDataAccessException(1));
+            return Option.of(id)
+                    .flatMap(i -> Option.ofOptional(repo.findById(i)))
+                    .getOrElseThrow(() -> new EmptyResultDataAccessException(1));
         }
     }
 }

@@ -53,6 +53,7 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
     }
 
     @Override
+    @SuppressWarnings("null")
     public ClassificationResult classify(Throwable throwable, String operation, String repository) {
         Throwable cause = unwrap(throwable);
         String sqlState = extractSqlState(cause);

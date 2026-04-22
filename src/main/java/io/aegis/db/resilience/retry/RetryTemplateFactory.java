@@ -11,7 +11,6 @@ import org.springframework.retry.support.RetryTemplate;
 
 import java.util.Map;
 
-import static io.vavr.API.*;
 
 /**
  * Builds {@link RetryTemplate} instances. Shared globally (one per default config) or

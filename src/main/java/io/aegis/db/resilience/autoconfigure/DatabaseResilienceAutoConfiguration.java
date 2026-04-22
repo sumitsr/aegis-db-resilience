@@ -7,6 +7,7 @@ import io.aegis.db.resilience.classification.DefaultDatabaseExceptionClassifier;
 import io.aegis.db.resilience.observability.DatabaseOperationMetrics;
 import io.aegis.db.resilience.retry.RetryTemplateFactory;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.vavr.control.Option;
 import org.springframework.aop.aspectj.AspectJExpressionPointcutAdvisor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -147,7 +148,7 @@ public class DatabaseResilienceAutoConfiguration {
 
         AspectJExpressionPointcutAdvisor advisor = new AspectJExpressionPointcutAdvisor();
         advisor.setExpression(expression);
-        advisor.setAdvice(interceptor);
+        Option.of(interceptor).forEach(advisor::setAdvice);
         advisor.setOrder(Ordered.LOWEST_PRECEDENCE - 200);
         return advisor;
     }

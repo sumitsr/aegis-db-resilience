@@ -3,7 +3,6 @@ package io.aegis.db.resilience.classification;
 import io.aegis.db.resilience.domain.*;
 import jakarta.persistence.EntityNotFoundException;
 import org.hibernate.StaleObjectStateException;
-import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -74,6 +73,7 @@ class DefaultDatabaseExceptionClassifierTest {
     class Transient {
 
         @Test
+        @SuppressWarnings({ "deprecation", "null" })
         void deadlockLoser_isTransientAndRetryable() {
             ClassificationResult result = classify(new DeadlockLoserDataAccessException("deadlock", null));
             assertThat(result.domainException()).isInstanceOf(TransientDataOperationException.class);
