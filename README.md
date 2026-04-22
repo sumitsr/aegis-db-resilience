@@ -10,6 +10,7 @@ A zero-annotation, auto-configuring Spring Boot 3.x starter that transforms raw 
 - [Architecture Overview](#architecture-overview)
 - [Design & Core Philosophy](#design--core-philosophy)
 - [Functional Error Handling (Vavr)](#functional-error-handling-vavr)
+- [Best Practices: Handling Exceptions](#best-practices-handling-exceptions)
 - [Getting Started](#getting-started)
 - [Exception Hierarchy](#exception-hierarchy)
 - [Exception Classification](#exception-classification)
@@ -314,6 +315,46 @@ userService.registerUser("duplicate@test.com")
 ```
 
 ---
+
+## Best Practices: Handling Exceptions
+
+When a database exception is thrown in an application using Aegis, it is intercepted, classified, and transformed before reaching your business logic. 
+
+### 1. Catch Domain Exceptions, Not Spring Exceptions
+Stop catching `org.springframework.dao.DataAccessException`. Aegis guarantees that these will never escape. Instead, catch the Aegis domain hierarchy for precise control:
+
+```java
+try {
+    productService.create(new Product("SKU-123"));
+} catch (DataIntegrityException ex) {
+    if (ex.violationType() == ViolationType.UNIQUE) {
+        return ResponseEntity.status(409).body("SKU already exists");
+    }
+} catch (DataNotFoundException ex) {
+    return ResponseEntity.status(404).body("Product not found");
+}
+```
+
+### 2. Centralize Transport Mapping
+For generic errors, use a global `@ControllerAdvice` (Spring Web) or Interceptors (gRPC) to map domain exceptions to transport-specific codes. This keeps your service logic focused on business rules.
+
+### 3. Summary of Exception Strategies
+
+| Exception Type | Application Strategy |
+| :--- | :--- |
+| `DataIntegrityException` | **Handle in Service/Controller**: Map to 400/409. Represents a client error. |
+| `DataNotFoundException` | **Map Globally**: Usually represents a 404. |
+| `DataConflictException` | **Handle in Service**: Prompt user to refresh state (Optimistic Locking). |
+| `TransientDataOperationException` | **Ignore**: Aegis has already retried this. If it reaches you, all retries failed. |
+| `DataUnavailableException` | **Alerting**: Represents DB downtime. Let it bubble up to a 503. |
+
+### 4. Key Rules
+*   **Don't Retry Manually**: If an exception is retriable (Deadlock/Timeout), Aegis has already performed exponential backoff.
+*   **Rely on Observability**: No need to log exceptions manually. Aegis records Micrometer metrics and OTel span events automatically.
+*   **Proxy Boundaries**: Ensure calls are made across bean boundaries. Internal calls (`this.xxx()`) bypass the AOP proxy.
+
+---
+
 
 ## Prerequisites & Core Dependencies
 
