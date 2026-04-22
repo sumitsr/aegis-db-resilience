@@ -20,6 +20,9 @@ import org.springframework.transaction.UnexpectedRollbackException;
 
 import java.sql.SQLException;
 
+import static io.vavr.API.*;
+import static io.vavr.Predicates.*;
+
 /**
  * Built-in classifier. Evaluated last (order = Integer.MAX_VALUE) so custom classifiers
  * registered at lower order values take precedence.
@@ -39,6 +42,12 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
 
     private final SQLExceptionTranslator sqlExceptionTranslator;
 
+    /**
+     * Constructs a new classifier using the provided {@link SQLExceptionTranslator}
+     * for raw JDBC exception mapping.
+     *
+     * @param sqlExceptionTranslator the translator to use for low-level JDBC errors
+     */
     public DefaultDatabaseExceptionClassifier(SQLExceptionTranslator sqlExceptionTranslator) {
         this.sqlExceptionTranslator = sqlExceptionTranslator;
     }
@@ -49,13 +58,7 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
         String sqlState = extractSqlState(cause);
         int errorCode   = extractErrorCode(cause);
 
-        // --- SQLState-based (most authoritative) ---
-        if (sqlState != null) {
-            ClassificationResult sqlStateResult = classifyBySqlState(sqlState, errorCode, cause, operation, repository);
-            if (sqlStateResult != null) return sqlStateResult;
-        }
-
-        // --- Raw SQLException not yet translated ---
+        // --- 1. Raw SQLException translation (Database Agnostic via Spring) ---
         if (cause instanceof SQLException se) {
             DataAccessException translated = sqlExceptionTranslator.translate(operation, null, se);
             if (translated != null) {
@@ -63,8 +66,23 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
             }
         }
 
-        // --- Spring Data exception hierarchy ---
-        return classifyByType(cause, sqlState, errorCode, operation, repository);
+        // --- 2. Type-based classification (Highly Database Agnostic) ---
+        ClassificationResult typeResult = classifyByType(cause, sqlState, errorCode, operation, repository);
+        
+        // --- 3. SQLState refinement for Generic Categories ---
+        // If we got a generic classification, try to sharpen it using the SQLState
+        if (isGeneric(typeResult) && sqlState != null) {
+            ClassificationResult refined = classifyBySqlState(sqlState, errorCode, cause, operation, repository);
+            if (refined != null) return refined;
+        }
+
+        return typeResult;
+    }
+
+    private boolean isGeneric(ClassificationResult result) {
+        return result.category() == ExceptionCategory.INTEGRITY_GENERIC ||
+               result.category() == ExceptionCategory.UNAVAILABLE ||
+               result.category() == ExceptionCategory.PROGRAMMING_ERROR;
     }
 
     // -------------------------------------------------------------------------
@@ -82,10 +100,10 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
             return integrityResult(sqlState, errorCode, cause, operation, repository);
         }
         return switch (sqlState) {
-            case SqlStateFamily.DEADLOCK_DETECTED,
+            case SqlStateFamily.PT_DEADLOCK_DETECTED,
                  SqlStateFamily.SERIALIZATION_FAILURE  -> transient_(cause, sqlState, errorCode, operation, repository);
-            case SqlStateFamily.LOCK_NOT_AVAILABLE      -> transient_(cause, sqlState, errorCode, operation, repository);
-            case SqlStateFamily.QUERY_CANCELLED_SQLSTATE -> timeout(cause, sqlState, errorCode, operation, repository);
+            case SqlStateFamily.PT_LOCK_NOT_AVAILABLE      -> transient_(cause, sqlState, errorCode, operation, repository);
+            case SqlStateFamily.PT_QUERY_CANCELLED_SQLSTATE -> timeout(cause, sqlState, errorCode, operation, repository);
             default -> null;
         };
     }
@@ -93,14 +111,17 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
     private ClassificationResult integrityResult(
             String sqlState, int errorCode, Throwable cause,
             String operation, String repository) {
+        
         DataIntegrityException.ViolationType type = switch (sqlState) {
-            case SqlStateFamily.UNIQUE_VIOLATION      -> DataIntegrityException.ViolationType.UNIQUE;
-            case SqlStateFamily.FOREIGN_KEY_VIOLATION -> DataIntegrityException.ViolationType.FOREIGN_KEY;
-            case SqlStateFamily.NOT_NULL_VIOLATION    -> DataIntegrityException.ViolationType.NOT_NULL;
-            case SqlStateFamily.CHECK_VIOLATION       -> DataIntegrityException.ViolationType.CHECK;
-            case SqlStateFamily.EXCLUSION_VIOLATION   -> DataIntegrityException.ViolationType.EXCLUSION;
+            case SqlStateFamily.PT_UNIQUE_VIOLATION, 
+                 SqlStateFamily.OR_UNIQUE_VIOLATION      -> DataIntegrityException.ViolationType.UNIQUE;
+            case SqlStateFamily.PT_FOREIGN_KEY_VIOLATION -> DataIntegrityException.ViolationType.FOREIGN_KEY;
+            case SqlStateFamily.PT_NOT_NULL_VIOLATION    -> DataIntegrityException.ViolationType.NOT_NULL;
+            case SqlStateFamily.PT_CHECK_VIOLATION       -> DataIntegrityException.ViolationType.CHECK;
+            case SqlStateFamily.PT_EXCLUSION_VIOLATION   -> DataIntegrityException.ViolationType.EXCLUSION;
             default -> DataIntegrityException.ViolationType.GENERIC;
         };
+
         ExceptionCategory category = switch (type) {
             case UNIQUE      -> ExceptionCategory.INTEGRITY_UNIQUE;
             case FOREIGN_KEY -> ExceptionCategory.INTEGRITY_FK;
@@ -109,6 +130,7 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
             case EXCLUSION   -> ExceptionCategory.INTEGRITY_EXCLUSION;
             case GENERIC     -> ExceptionCategory.INTEGRITY_GENERIC;
         };
+        
         return new ClassificationResult(
                 DataIntegrityException.of(cause, sqlState, errorCode, operation, repository, type),
                 category, false);
@@ -122,94 +144,66 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
             Throwable t, String sqlState, int errorCode,
             String operation, String repository) {
 
-        // Not-found
-        if (t instanceof EmptyResultDataAccessException
-                || t instanceof EntityNotFoundException
-                || t instanceof NonUniqueResultException
-                || t instanceof IncorrectResultSizeDataAccessException) {
-            return new ClassificationResult(
-                    DataNotFoundException.of(t, operation, repository),
-                    ExceptionCategory.NOT_FOUND, false);
-        }
+        return Match(t).of(
+                Case($(anyOf(
+                        instanceOf(EmptyResultDataAccessException.class),
+                        instanceOf(EntityNotFoundException.class),
+                        instanceOf(NonUniqueResultException.class),
+                        instanceOf(IncorrectResultSizeDataAccessException.class))),
+                        ex -> new ClassificationResult(DataNotFoundException.of(ex, operation, repository), ExceptionCategory.NOT_FOUND, false)),
 
-        // Timeout
-        if (t instanceof QueryTimeoutException) {
-            return timeout(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(instanceOf(QueryTimeoutException.class)),
+                        ex -> timeout(ex, sqlState, errorCode, operation, repository)),
 
-        // Optimistic lock / concurrency conflict (non-retryable at infra layer)
-        // explicitly check for optimistic lock failures to prevent them from falling into TransientDataAccessException
-        if (t instanceof OptimisticLockingFailureException
-                || t instanceof ObjectOptimisticLockingFailureException
-                || t instanceof StaleObjectStateException) {
-            return new ClassificationResult(
-                    DataConflictException.of(t, sqlState, errorCode, operation, repository),
-                    ExceptionCategory.CONFLICT, false);
-        }
+                Case($(anyOf(
+                        instanceOf(OptimisticLockingFailureException.class),
+                        instanceOf(ObjectOptimisticLockingFailureException.class),
+                        instanceOf(StaleObjectStateException.class))),
+                        ex -> new ClassificationResult(DataConflictException.of(ex, sqlState, errorCode, operation, repository), ExceptionCategory.CONFLICT, false)),
 
-        // Transient / retryable
-        // Note: ConcurrencyFailureException (like DeadlockLoser) is a TransientDataAccessException
-        if (t instanceof TransientDataAccessException
-                || t instanceof RecoverableDataAccessException
-                || t instanceof CannotAcquireLockException
-                || t instanceof LockAcquisitionException) {
-            return transient_(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(anyOf(
+                        instanceOf(TransientDataAccessException.class),
+                        instanceOf(RecoverableDataAccessException.class),
+                        instanceOf(CannotAcquireLockException.class),
+                        instanceOf(LockAcquisitionException.class))),
+                        ex -> transient_(ex, sqlState, errorCode, operation, repository)),
 
-        // Connectivity / pool exhaustion
-        if (t instanceof CannotGetJdbcConnectionException
-                || t instanceof DataAccessResourceFailureException
-                || t instanceof CannotCreateTransactionException) {
-            return unavailable(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(anyOf(
+                        instanceOf(CannotGetJdbcConnectionException.class),
+                        instanceOf(DataAccessResourceFailureException.class),
+                        instanceOf(CannotCreateTransactionException.class))),
+                        ex -> unavailable(ex, sqlState, errorCode, operation, repository)),
 
-        // Integrity constraint (Spring level, no SQLState available)
-        if (t instanceof DataIntegrityViolationException) {
-            if (t instanceof DuplicateKeyException) {
-                return new ClassificationResult(
-                        DataIntegrityException.of(t, sqlState, errorCode, operation, repository,
-                                DataIntegrityException.ViolationType.UNIQUE),
-                        ExceptionCategory.INTEGRITY_UNIQUE, false);
-            }
-            return new ClassificationResult(
-                    DataIntegrityException.of(t, sqlState, errorCode, operation, repository,
-                            DataIntegrityException.ViolationType.GENERIC),
-                    ExceptionCategory.INTEGRITY_GENERIC, false);
-        }
+                Case($(instanceOf(DuplicateKeyException.class)),
+                        ex -> new ClassificationResult(DataIntegrityException.of(ex, sqlState, errorCode, operation, repository, DataIntegrityException.ViolationType.UNIQUE), ExceptionCategory.INTEGRITY_UNIQUE, false)),
 
-        // Transaction lifecycle — surface the real cause from UnexpectedRollbackException
-        if (t instanceof UnexpectedRollbackException ure && ure.getCause() != null) {
-            return classify(ure.getCause(), operation, repository);
-        }
-        if (t instanceof TransactionSystemException tse) {
-            return extractConstraintViolation(tse, sqlState, errorCode, operation, repository);
-        }
-        if (t instanceof IllegalTransactionStateException) {
-            return programmingError(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(instanceOf(DataIntegrityViolationException.class)),
+                        ex -> new ClassificationResult(DataIntegrityException.of(ex, sqlState, errorCode, operation, repository, DataIntegrityException.ViolationType.GENERIC), ExceptionCategory.INTEGRITY_GENERIC, false)),
 
-        // Programming / schema errors
-        if (t instanceof InvalidDataAccessApiUsageException
-                || t instanceof InvalidDataAccessResourceUsageException
-                || t instanceof org.hibernate.exception.SQLGrammarException
-                || t instanceof org.hibernate.LazyInitializationException) {
-            return programmingError(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(instanceOf(UnexpectedRollbackException.class)),
+                        ex -> ex.getCause() != null ? classify(ex.getCause(), operation, repository) : programmingError(ex, sqlState, errorCode, operation, repository)),
 
-        // JPA/Hibernate wrapper — unwrap and retry
-        if (t instanceof JpaSystemException || t instanceof PersistenceException) {
-            Throwable nested = t.getCause();
-            if (nested != null && nested != t) {
-                return classify(nested, operation, repository);
-            }
-        }
+                Case($(instanceOf(TransactionSystemException.class)),
+                        ex -> extractConstraintViolation(ex, sqlState, errorCode, operation, repository)),
 
-        // Fallback: treat unknown DataAccessException as programming error
-        if (t instanceof DataAccessException) {
-            return programmingError(t, sqlState, errorCode, operation, repository);
-        }
+                Case($(anyOf(
+                        instanceOf(IllegalTransactionStateException.class),
+                        instanceOf(InvalidDataAccessApiUsageException.class),
+                        instanceOf(InvalidDataAccessResourceUsageException.class),
+                        instanceOf(org.hibernate.exception.SQLGrammarException.class),
+                        instanceOf(org.hibernate.LazyInitializationException.class))),
+                        ex -> programmingError(ex, sqlState, errorCode, operation, repository)),
 
-        return programmingError(t, sqlState, errorCode, operation, repository);
+                Case($(anyOf(
+                        instanceOf(JpaSystemException.class),
+                        instanceOf(PersistenceException.class))),
+                        ex -> ex.getCause() != null && ex.getCause() != ex ? classify(ex.getCause(), operation, repository) : programmingError(ex, sqlState, errorCode, operation, repository)),
+
+                Case($(instanceOf(DataAccessException.class)),
+                        ex -> programmingError(ex, sqlState, errorCode, operation, repository)),
+
+                Case($(), ex -> programmingError(ex, sqlState, errorCode, operation, repository))
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -273,49 +267,44 @@ public class DefaultDatabaseExceptionClassifier implements DatabaseExceptionClas
                 ExceptionCategory.PROGRAMMING_ERROR, false);
     }
 
-    /**
-     * Walk the cause chain to find a {@link SQLException} carrying a SQLState.
-     * Stops at cycle or depth 10 to prevent infinite loops from malformed exceptions.
-     */
     private String extractSqlState(Throwable t) {
-        int depth = 0;
-        Throwable cursor = t;
-        while (cursor != null && depth++ < 10) {
-            if (cursor instanceof SQLException se && se.getSQLState() != null) {
-                return se.getSQLState();
-            }
-            if (cursor instanceof DataAccessException dae) {
-                Throwable nested = dae.getCause();
-                if (nested instanceof SQLException se && se.getSQLState() != null) {
-                    return se.getSQLState();
-                }
-            }
-            Throwable next = cursor.getCause();
-            cursor = (next == cursor) ? null : next;
-        }
-        return null;
+        return io.vavr.collection.Stream.iterate(t, cause -> cause == cause.getCause() ? null : cause.getCause())
+                .take(10)
+                .takeWhile(java.util.Objects::nonNull)
+                .flatMap(cursor -> {
+                    if (cursor instanceof SQLException se && se.getSQLState() != null) {
+                        return io.vavr.collection.Stream.of(se.getSQLState());
+                    }
+                    if (cursor instanceof DataAccessException dae && dae.getCause() instanceof SQLException se && se.getSQLState() != null) {
+                        return io.vavr.collection.Stream.of(se.getSQLState());
+                    }
+                    return io.vavr.collection.Stream.empty();
+                })
+                .headOption()
+                .getOrNull();
     }
 
     private int extractErrorCode(Throwable t) {
-        int depth = 0;
-        Throwable cursor = t;
-        while (cursor != null && depth++ < 10) {
-            if (cursor instanceof SQLException se) return se.getErrorCode();
-            Throwable next = cursor.getCause();
-            cursor = (next == cursor) ? null : next;
-        }
-        return 0;
+        return io.vavr.collection.Stream.iterate(t, cause -> cause == cause.getCause() ? null : cause.getCause())
+                .take(10)
+                .takeWhile(java.util.Objects::nonNull)
+                .flatMap(cursor -> {
+                    if (cursor instanceof SQLException se) return io.vavr.collection.Stream.of(se.getErrorCode());
+                    if (cursor instanceof DataAccessException dae && dae.getCause() instanceof SQLException se) return io.vavr.collection.Stream.of(se.getErrorCode());
+                    return io.vavr.collection.Stream.empty();
+                })
+                .headOption()
+                .getOrElse(0);
     }
 
     /**
-     * Unwrap JPA/Spring wrappers one level so type-matching works against the real cause.
-     * Only strips if the cause is itself a known database exception type.
+     * Unwrap JPA/Spring wrappers one level using Match API.
      */
     private Throwable unwrap(Throwable t) {
-        if (t instanceof JpaSystemException || t instanceof PersistenceException) {
-            Throwable cause = t.getCause();
-            if (cause != null && cause != t) return cause;
-        }
-        return t;
+        return Match(t).of(
+                Case($(anyOf(instanceOf(JpaSystemException.class), instanceOf(PersistenceException.class))),
+                        ex -> ex.getCause() != null && ex.getCause() != ex ? ex.getCause() : ex),
+                Case($(), ex -> ex)
+        );
     }
 }

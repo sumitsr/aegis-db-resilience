@@ -82,7 +82,7 @@ class DefaultDatabaseExceptionClassifierTest {
 
         @Test
         void deadlockSqlState_isTransient() {
-            var sqlEx = new SQLException("deadlock", SqlStateFamily.DEADLOCK_DETECTED);
+            var sqlEx = new SQLException("deadlock", SqlStateFamily.PT_DEADLOCK_DETECTED);
             ClassificationResult result = classify(sqlEx);
             assertThat(result.domainException()).isInstanceOf(TransientDataOperationException.class);
         }
@@ -151,7 +151,7 @@ class DefaultDatabaseExceptionClassifierTest {
 
         @Test
         void uniqueViolation_bySqlState_23505() {
-            var sqlEx = new SQLException("duplicate key", SqlStateFamily.UNIQUE_VIOLATION, 0);
+            var sqlEx = new SQLException("duplicate key", SqlStateFamily.PT_UNIQUE_VIOLATION, 0);
             ClassificationResult result = classify(sqlEx);
             assertThat(result.domainException()).isInstanceOf(DataIntegrityException.class);
             assertThat(violationType(result)).isEqualTo(DataIntegrityException.ViolationType.UNIQUE);
@@ -159,7 +159,7 @@ class DefaultDatabaseExceptionClassifierTest {
 
         @Test
         void foreignKeyViolation_bySqlState_23503() {
-            var sqlEx = new SQLException("fk violation", SqlStateFamily.FOREIGN_KEY_VIOLATION, 0);
+            var sqlEx = new SQLException("fk violation", SqlStateFamily.PT_FOREIGN_KEY_VIOLATION, 0);
             ClassificationResult result = classify(sqlEx);
             assertThat(violationType(result)).isEqualTo(DataIntegrityException.ViolationType.FOREIGN_KEY);
             assertThat(result.category()).isEqualTo(ExceptionCategory.INTEGRITY_FK);
@@ -167,28 +167,28 @@ class DefaultDatabaseExceptionClassifierTest {
 
         @Test
         void notNullViolation_bySqlState_23502() {
-            var sqlEx = new SQLException("not null", SqlStateFamily.NOT_NULL_VIOLATION, 0);
+            var sqlEx = new SQLException("not null", SqlStateFamily.PT_NOT_NULL_VIOLATION, 0);
             ClassificationResult result = classify(sqlEx);
             assertThat(violationType(result)).isEqualTo(DataIntegrityException.ViolationType.NOT_NULL);
         }
 
         @Test
         void checkViolation_bySqlState_23514() {
-            var sqlEx = new SQLException("check violation", SqlStateFamily.CHECK_VIOLATION, 0);
+            var sqlEx = new SQLException("check violation", SqlStateFamily.PT_CHECK_VIOLATION, 0);
             ClassificationResult result = classify(sqlEx);
             assertThat(violationType(result)).isEqualTo(DataIntegrityException.ViolationType.CHECK);
         }
 
         @Test
         void exclusionViolation_bySqlState_23P01() {
-            var sqlEx = new SQLException("exclusion violation", SqlStateFamily.EXCLUSION_VIOLATION, 0);
+            var sqlEx = new SQLException("exclusion violation", SqlStateFamily.PT_EXCLUSION_VIOLATION, 0);
             ClassificationResult result = classify(sqlEx);
             assertThat(violationType(result)).isEqualTo(DataIntegrityException.ViolationType.EXCLUSION);
         }
 
         @Test
         void dataIntegrityViolationWrapper_wrappingUniqueSqlState() {
-            var sqlCause = new SQLException("uk", SqlStateFamily.UNIQUE_VIOLATION, 0);
+            var sqlCause = new SQLException("uk", SqlStateFamily.PT_UNIQUE_VIOLATION, 0);
             var wrapped = new DataIntegrityViolationException("constraint", sqlCause);
             ClassificationResult result = classify(wrapped);
             assertThat(result.domainException()).isInstanceOf(DataIntegrityException.class);
@@ -234,7 +234,7 @@ class DefaultDatabaseExceptionClassifierTest {
         @Test
         void unexpectedRollback_surfacesRealCause() {
             // The real cause is a unique violation inside the transaction
-            var sqlCause = new SQLException("duplicate", SqlStateFamily.UNIQUE_VIOLATION, 0);
+            var sqlCause = new SQLException("duplicate", SqlStateFamily.PT_UNIQUE_VIOLATION, 0);
             var realCause = new DataIntegrityViolationException("uk", sqlCause);
             var wrapper = new UnexpectedRollbackException("rollback", realCause);
 
@@ -306,7 +306,7 @@ class DefaultDatabaseExceptionClassifierTest {
 
         @Test
         void queryCancelledSqlState_isTimeout() {
-            var sqlEx = new SQLException("query canceled", SqlStateFamily.QUERY_CANCELLED_SQLSTATE);
+            var sqlEx = new SQLException("query canceled", SqlStateFamily.PT_QUERY_CANCELLED_SQLSTATE);
             ClassificationResult result = classify(sqlEx);
             assertThat(result.domainException()).isInstanceOf(DataTimeoutException.class);
         }
@@ -319,14 +319,14 @@ class DefaultDatabaseExceptionClassifierTest {
     @Test
     void rawSqlExceptionWithKnownSqlState_isTranslatedAndClassified() {
         // A raw SQLException bypassing Spring's translator (e.g., from a stored proc)
-        var sqlEx = new SQLException("raw", SqlStateFamily.DEADLOCK_DETECTED, 0);
+        var sqlEx = new SQLException("raw", SqlStateFamily.PT_DEADLOCK_DETECTED, 0);
         ClassificationResult result = classify(sqlEx);
         assertThat(result.domainException()).isInstanceOf(TransientDataOperationException.class);
     }
 
     @Test
     void jpaSystemException_unwrapsToRealCause() {
-        var sqlEx = new SQLException("unique", SqlStateFamily.UNIQUE_VIOLATION, 0);
+        var sqlEx = new SQLException("unique", SqlStateFamily.PT_UNIQUE_VIOLATION, 0);
         var hibernate = new org.hibernate.exception.ConstraintViolationException("uk", sqlEx, "orders_pkey");
         var jpaEx = new JpaSystemException(new jakarta.persistence.PersistenceException(hibernate));
 

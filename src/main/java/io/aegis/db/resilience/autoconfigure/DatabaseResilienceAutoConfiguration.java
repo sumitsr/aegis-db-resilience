@@ -31,6 +31,13 @@ import java.util.stream.StreamSupport;
 @ConditionalOnClass(name = "org.springframework.dao.DataAccessException")
 public class DatabaseResilienceAutoConfiguration {
 
+    /**
+     * Provides the default {@link SQLExceptionTranslator}.
+     * Prefers using the provided {@link DataSource} for vendor-specific error code mapping.
+     *
+     * @param dataSource the data source to use for translation hints
+     * @return a configured SQL exception translator
+     */
     @Bean
     @ConditionalOnMissingBean
     public SQLExceptionTranslator sqlExceptionTranslator(ObjectProvider<DataSource> dataSource) {
@@ -40,6 +47,12 @@ public class DatabaseResilienceAutoConfiguration {
                 : new SQLErrorCodeSQLExceptionTranslator();
     }
 
+    /**
+     * Provides the default built-in exception classifier.
+     *
+     * @param translator the translator to use for lower-level SQL error mapping
+     * @return the default database exception classifier
+     */
     @Bean
     @ConditionalOnMissingBean
     public DefaultDatabaseExceptionClassifier defaultDatabaseExceptionClassifier(
@@ -47,18 +60,39 @@ public class DatabaseResilienceAutoConfiguration {
         return new DefaultDatabaseExceptionClassifier(translator);
     }
 
+    /**
+     * Provides the metrics handler for database operations.
+     *
+     * @param meterRegistryProvider provider for the Micrometer registry
+     * @return the database operation metrics handler
+     */
     @Bean
     @ConditionalOnMissingBean
-    public DatabaseOperationMetrics databaseOperationMetrics(MeterRegistry meterRegistry) {
-        return new DatabaseOperationMetrics(meterRegistry);
+    public DatabaseOperationMetrics databaseOperationMetrics(ObjectProvider<MeterRegistry> meterRegistryProvider) {
+        return new DatabaseOperationMetrics(meterRegistryProvider.getIfAvailable());
     }
 
+    /**
+     * Provides the factory for creating policy-aware retry templates.
+     *
+     * @param props the global configuration properties
+     * @return the retry template factory
+     */
     @Bean
     @ConditionalOnMissingBean
     public RetryTemplateFactory retryTemplateFactory(DatabaseResilienceProperties props) {
         return new RetryTemplateFactory(props);
     }
 
+    /**
+     * Provides the shared resilience interceptor.
+     * Discovers all {@link DatabaseExceptionClassifier} beans and sorts them by order.
+     *
+     * @param classifierProvider   provider for all discovered classifiers
+     * @param metrics              the metrics handler
+     * @param retryTemplateFactory the retry template factory
+     * @return the resilience interceptor
+     */
     @Bean
     @ConditionalOnMissingBean
     public DatabaseResilienceInterceptor databaseResilienceInterceptor(
@@ -74,6 +108,12 @@ public class DatabaseResilienceAutoConfiguration {
         return new DatabaseResilienceInterceptor(sorted, metrics, retryTemplateFactory);
     }
 
+    /**
+     * Provides the AspectJ aspect for explicit {@code @ResilientRepository} support.
+     *
+     * @param interceptor the shared resilience interceptor
+     * @return the resilience aspect
+     */
     @Bean
     @ConditionalOnMissingBean
     public DatabaseResilienceAspect databaseResilienceAspect(
