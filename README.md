@@ -676,47 +676,66 @@ aegis.db.resilience.retry:
 
 ---
 
-## Observability
+## 📡 Observability
 
-### Micrometer — `db.operation.failures` counter
+Observability is not just about logging errors; it's about providing the "signals" needed to detect patterns, reduce Mean Time To Detection (MTTD), and understand the blast radius of database failures.
 
-Every classified failure increments a counter with the following tags:
+### Why Observability Matters in Aegis
+Aegis sits at the boundary of your persistence layer. By capturing signals here, it provides:
+*   **Capacity Planning**: Track how often transient failures (like lock timeouts) occur to identify hot spots in your database schema.
+*   **Alerting**: Differentiate between "expected" failures (like duplicate keys) and "critical" failures (like connection pool exhaustion).
+*   **Root Cause Analysis**: Trace a failed request from the API down to the exact SQLState and repository method that failed.
 
-| Tag              | Example value          |
-|------------------|------------------------|
-| `classification` | `INTEGRITY_UNIQUE`     |
-| `repository`     | `OrderRepository`      |
-| `method`         | `save`                 |
-| `sqlstate`       | `23505`                |
+### 📊 Micrometer Metrics
+Aegis automatically publishes metrics via Micrometer's `MeterRegistry`. If you have a registry bean (like Prometheus) in your context, metrics will flow automatically.
 
-Prometheus scrape example:
+*   **Counter**: `db.operation.failures`
+*   **Tags**:
+    | Tag              | Description                                     |
+    |------------------|-------------------------------------------------|
+    | `classification` | The stable category (e.g. `INTEGRITY_UNIQUE`) |
+    | `repository`     | Simple class name of the target bean            |
+    | `method`         | The method name that failed                     |
+    | `sqlstate`       | The ANSI/ISO standard SQLState code             |
 
+**Best Use Case**: Create a Grafana dashboard with a "Failure Heatmap" to see which repositories are failing the most and why.
+
+### 🔍 OpenTelemetry (OTel) Tracing
+If an OpenTelemetry `Span` is active when a failure occurs, Aegis automatically enriches it with high-cardinality metadata.
+
+*   **Status**: Sets span status to `ERROR` with the classification name as the description.
+*   **Event**: Records an event named `db.operation.failure`.
+*   **Attributes**:
+    - `db.error.classification`: Stable category label.
+    - `db.error.sqlstate`: The 5-character SQLState code.
+    - `db.error.operation`: The repository method name.
+    - `db.error.repository`: The repository class name.
+
+**Best Use Case**: Use Jaeger or Honeycomb to find the exact trace that caused a `DataConflictException` and see the full call stack leading up to it.
+
+### 📝 Structured Logging (MDC)
+Aegis uses MDC (Mapped Diagnostic Context) to ensure your logs are machine-readable and easy to query in ELK or Splunk.
+
+**MDC Keys**: `db.classification`, `db.operation`, `db.repository`, `db.sqlstate`, `db.errorCode`, `db.retried`.
+
+**Log Level Strategy**:
+*   `ERROR`: Programming errors (bad SQL, schema mismatch) — requires immediate attention.
+*   `WARN`: Transient failures that were retried — indicates system pressure.
+*   `INFO`: Domain failures (e.g. Not Found, Conflict) — part of normal business flow.
+
+### ⚙️ How to Configure or Disable
+By default, Aegis looks for a `MeterRegistry` and a current `Span`. No manual wiring is required.
+
+**To Disable Observability**:
+If you wish to suppress these signals (e.g. in specific environments like local development or performance testing), use the following property:
+
+```yaml
+aegis:
+  db:
+    resilience:
+      observability:
+        enabled: false  # Disables Micrometer, OTel, and MDC log enrichment
 ```
-db_operation_failures_total{classification="INTEGRITY_UNIQUE",repository="OrderRepository",method="save",sqlstate="23505"} 3.0
-```
-
-### OpenTelemetry span enrichment
-
-On every failure the current OTel span receives:
-
-- `span.status` → `ERROR`
-- `span.event` → `db.operation.failure`
-- Attributes: `db.error.classification`, `db.error.sqlstate`, `db.error.operation`, `db.error.repository`
-
-### MDC-enriched structured logs
-
-The following MDC keys are set for the duration of the log call and then removed:
-
-```
-db.classification  db.operation  db.repository
-db.sqlstate        db.errorCode  db.retried
-```
-
-Log levels by category:
-
-- `PROGRAMMING_ERROR` → `ERROR`
-- Retried failures → `WARN`
-- All others → `INFO`
 
 ---
 

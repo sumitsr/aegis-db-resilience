@@ -27,6 +27,7 @@ public class DatabaseOperationMetrics {
     static final String METRIC_NAME = "db.operation.failures";
 
     private final MeterRegistry meterRegistry;
+    private final boolean enabled;
     // Cache counters to avoid repeated tag lookups on every failure
     private final Map<String, Counter> counterCache = new ConcurrentHashMap<>();
 
@@ -34,9 +35,11 @@ public class DatabaseOperationMetrics {
      * Constructs the metrics handler with a {@link MeterRegistry}.
      *
      * @param meterRegistry the registry to record metrics to; may be {@code null} to disable metrics
+     * @param enabled       whether observability features are enabled
      */
-    public DatabaseOperationMetrics(MeterRegistry meterRegistry) {
+    public DatabaseOperationMetrics(MeterRegistry meterRegistry, boolean enabled) {
         this.meterRegistry = meterRegistry;
+        this.enabled = enabled;
     }
 
     /**
@@ -49,6 +52,7 @@ public class DatabaseOperationMetrics {
      * @param retried  whether the operation was attempted more than once
      */
     public void record(DataOperationException ex, ExceptionCategory category, boolean retried) {
+        if (!enabled) return;
         incrementCounter(ex, category);
         tagCurrentSpan(ex, category);
         structuredLog(ex, category, retried);

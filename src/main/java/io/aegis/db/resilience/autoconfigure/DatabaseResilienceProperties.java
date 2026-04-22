@@ -19,6 +19,7 @@ public class DatabaseResilienceProperties {
     private List<String> basePackages = List.of();
 
     private final RetryProperties retry = new RetryProperties();
+    private final ObservabilityProperties observability = new ObservabilityProperties();
 
     /**
      * Checks if auto-application to {@code @Repository} and {@code @Service} beans is enabled.
@@ -56,6 +57,13 @@ public class DatabaseResilienceProperties {
     public RetryProperties getRetry() { return retry; }
 
     /**
+     * Returns the observability configuration properties.
+     *
+     * @return the observability properties
+     */
+    public ObservabilityProperties getObservability() { return observability; }
+
+    /**
      * Configuration for exponential back-off retries.
      */
     public static class RetryProperties {
@@ -85,5 +93,18 @@ public class DatabaseResilienceProperties {
         public void setMaxBackoffMs(long maxBackoffMs)     { this.maxBackoffMs = maxBackoffMs; }
         /** @param multiplier the backoff multiplier */
         public void setMultiplier(double multiplier)       { this.multiplier   = multiplier; }
+    }
+
+    /**
+     * Configuration for observability features.
+     */
+    public static class ObservabilityProperties {
+        /** Whether to enable metrics, tracing enrichment, and structured logging. */
+        private boolean enabled = true;
+
+        /** @return {@code true} if observability is enabled */
+        public boolean isEnabled() { return enabled; }
+        /** @param enabled whether to enable observability */
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
     }
 }

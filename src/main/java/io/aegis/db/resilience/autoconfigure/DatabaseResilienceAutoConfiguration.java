@@ -69,8 +69,12 @@ public class DatabaseResilienceAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public DatabaseOperationMetrics databaseOperationMetrics(ObjectProvider<MeterRegistry> meterRegistryProvider) {
-        return new DatabaseOperationMetrics(meterRegistryProvider.getIfAvailable());
+    public DatabaseOperationMetrics databaseOperationMetrics(
+            ObjectProvider<MeterRegistry> meterRegistryProvider,
+            DatabaseResilienceProperties props) {
+        return new DatabaseOperationMetrics(
+                meterRegistryProvider.getIfAvailable(),
+                props.getObservability().isEnabled());
     }
 
     /**
