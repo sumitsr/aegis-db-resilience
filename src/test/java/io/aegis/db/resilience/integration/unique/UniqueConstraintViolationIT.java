@@ -1,4 +1,4 @@
-package io.aegis.db.resilience.integration;
+package io.aegis.db.resilience.integration.unique;
 
 import io.aegis.db.resilience.domain.DataIntegrityException;
 import io.aegis.db.resilience.domain.DataNotFoundException;
@@ -7,7 +7,6 @@ import io.aegis.db.resilience.domain.TransientDataOperationException;
 import jakarta.persistence.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.AutoConfigureTestEntityManager;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -39,11 +38,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * annotation is required on the service/repository — demonstrating zero-annotation adoption.
  */
 @Testcontainers
-@SpringBootTest(classes = {
-        UniqueConstraintViolationIT.TestConfig.class,
-        UniqueConstraintViolationIT.ProductService.class,
-        UniqueConstraintViolationIT.ProductRepository.class
-})
+@SpringBootTest(
+        classes = UniqueConstraintViolationIT.TestConfig.class,
+        properties = "spring.jpa.hibernate.ddl-auto=create-drop")
 @DirtiesContext
 class UniqueConstraintViolationIT {
 
@@ -112,11 +109,16 @@ class UniqueConstraintViolationIT {
     // Inner test application components
     // ─────────────────────────────────────────────────────────────────────────
 
-    @org.springframework.boot.test.context.TestConfiguration
+    @org.springframework.boot.SpringBootConfiguration
     @org.springframework.boot.autoconfigure.EnableAutoConfiguration
+    @org.springframework.data.jpa.repository.config.EnableJpaRepositories(
+            basePackageClasses = ProductRepository.class,
+            considerNestedRepositories = true)
+    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackageClasses = Product.class)
+    @org.springframework.context.annotation.Import(ProductService.class)
     static class TestConfig {}
 
-    @Entity
+    @Entity(name = "Product")
     @Table(name = "products", uniqueConstraints = @UniqueConstraint(columnNames = "sku"))
     static class Product {
         @Id @GeneratedValue(strategy = GenerationType.UUID)

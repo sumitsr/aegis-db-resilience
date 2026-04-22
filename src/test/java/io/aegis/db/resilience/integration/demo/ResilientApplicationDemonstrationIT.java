@@ -1,4 +1,4 @@
-package io.aegis.db.resilience.integration;
+package io.aegis.db.resilience.integration.demo;
 
 import io.aegis.db.resilience.domain.DataIntegrityException;
 import jakarta.persistence.*;
@@ -26,11 +26,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * SQL errors into pure Domain Exceptions (e.g., DataIntegrityException).
  */
 @Testcontainers
-@SpringBootTest(classes = {
-        ResilientApplicationDemonstrationIT.AppConfig.class,
-        ResilientApplicationDemonstrationIT.UserService.class,
-        ResilientApplicationDemonstrationIT.UserRepository.class
-})
+@SpringBootTest(
+        classes = ResilientApplicationDemonstrationIT.AppConfig.class,
+        properties = "spring.jpa.hibernate.ddl-auto=create-drop")
 @DirtiesContext
 class ResilientApplicationDemonstrationIT {
 
@@ -66,11 +64,16 @@ class ResilientApplicationDemonstrationIT {
     // Dummy Application Components (Simulating user's code)
     // ─────────────────────────────────────────────────────────────────────────
 
-    @org.springframework.boot.test.context.TestConfiguration
+    @org.springframework.boot.SpringBootConfiguration
     @org.springframework.boot.autoconfigure.EnableAutoConfiguration
+    @org.springframework.data.jpa.repository.config.EnableJpaRepositories(
+            basePackageClasses = UserRepository.class,
+            considerNestedRepositories = true)
+    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackageClasses = User.class)
+    @org.springframework.context.annotation.Import(UserService.class)
     static class AppConfig {}
 
-    @Entity
+    @Entity(name = "User")
     @Table(name = "users", uniqueConstraints = @UniqueConstraint(columnNames = "email"))
     static class User {
         @Id
