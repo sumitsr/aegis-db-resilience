@@ -41,12 +41,14 @@
 - [🔄 Retry Behaviour](#retry-behaviour)
 - [📝 Configuration Reference](#configuration-reference)
 - [📡 Observability](#observability)
+- [🏆 Best Practices: Retries & Idempotency](#-best-practices-retries--idempotency)
 - [🧩 Custom Classifiers](#custom-classifiers)
 - [🧪 Testing](#testing)
 - [🛡️ Transaction Awareness](#-transaction-awareness)
 - [📂 Project Structure](#-project-structure)
 - [🛡️ Security Model](#security-model)
 - [📄 License](#-license)
+- [🤝 Contributing](#-contributing)
 
 ---
 
@@ -147,17 +149,133 @@ Aegis natively supports **functional error handling**. Instead of throwing excep
 
 ### 2. Exception Taxonomy over Message Matching
 Raw `SQLException` messages change between database versions and vendors. Aegis uses a multi-stage **Classifier** to map these into a stable hierarchy:
-- `DataConflictException` (Optimistic locking)
-- `DataIntegrityException` (Unique/FK/Not-Null violations)
-- `TransientDataOperationException` (Deadlocks/Temporary lock timeouts)
-- `DataUnavailableException` (Connectivity/Pool exhaustion)
-- `DataNotFoundException` (Record missing)
+- Catch **DataConflictException** to handle optimistic locking (maps to HTTP 409).
+- Use **Vavr Either** for logic-heavy services to avoid deep try-catch nesting.
 
 ### 3. Transparent AOP Resilience
 The API uses Spring AOP to apply logic without changing your code:
 - **Explicit**: Use `@ResilientRepository` on specific classes.
 - **Implicit**: Use `aegis.db.resilience.auto-apply=true` to automatically protect every `@Repository` in your project.
 - **Granular Control**: Use `@RetryPolicy` at the method level to customize how many times to retry specific errors.
+
+### Why use this instead of standard Spring `@Retryable`?
+Aegis is **Database-Aware**. It knows the difference between a `Deadlock` (which should be retried) and a `Unique Violation` (which should never be retried). It provides the exact context of the database failure within its domain exceptions, making it far superior for data-intensive applications.
+
+---
+
+## Deep Dive: How It Works & Limitations
+
+Because Aegis deeply integrates with Spring AOP, it is useful to understand exactly how it handles common database lifecycle behaviors and where it might fall short.
+
+### Common Use Cases & Exception Handling
+
+#### 1. Data Integrity Violations & The `@Transactional` Commit Boundary
+**Scenario**: Inserting a user where an email address triggers a database-level `UNIQUE` constraint violation.
+Often when using JPA or Hibernate, a call to `repository.save()` doesn't actually hit the database right away due to optimization and caching (the "lazy flush"). The `UNIQUE` constraint exception is instead thrown by the `@Transactional` wrapper during the **commit phase** as the method is exiting.
+
+**The Aegis Advantage**: Because Aegis explicitly forces its AOP precedence very high (`Ordered.LOWEST_PRECEDENCE - 200`), it sits *outside* the Spring `@Transactional` wrapper. When the transaction commit fails, the Aegis interceptor catches the tangled `TransactionSystemException`, extracts the root cause (the SQL Unique constraint), maps it to a `DataIntegrityException(UNIQUE)`, and safely hands it down to the caller.
+
+#### 2. Transient Operations & Implicit Deadlocks
+**Scenario**: Two concurrent threads try to lock the same database rows in exact opposite orders. The database forcefully kills one transaction, producing a `DeadlockLoserDataAccessException` (SQL State `40P01`).
+
+**The Aegis Advantage**: Instead of immediately returning a generic 500 error, Aegis identifies the deadlock as a `TransientDataOperationException`. Based on your `@RetryPolicy`, Aegis intercepts the exception, automatically applies a backoff window, and silently **re-executes the method**.
+
+#### 3. Optimistic Locking Conflicts
+**Scenario**: When utilizing JPA `@Version` optimistic locking, two isolated users update an identical resource simultaneously, triggering a `StaleObjectStateException` or `OptimisticLockingFailureException`.
+
+**The Aegis Advantage**: Aegis strictly distinguishes between transient lock delays and optimistic cache staleness. Stale entities are mapped accurately to a `DataConflictException` (`CONFLICT`) which is explicitly **non-retryable**. Trying to retry an optimistic lock blindly creates an infinite loop; Aegis knows this and predictably skips the retry logic.
+
+#### 4. The "Missing Data" Matrix
+**Scenario**: Trying to fetch a lazy proxy with `getReferenceById()` throws a deep `EntityNotFoundException`. Or, using a `JdbcTemplate` to fetch a single object for a missing record throws an `EmptyResultDataAccessException`.
+
+**The Aegis Advantage**: Web and routing layers shouldn't need to know the database mapping engine used underneath. Aegis neatly collapses *all* vendor-specific persistence missing-data exceptions into a single consistent `DataNotFoundException`.
+
+#### 5. Programming Faults & Bad Deployments
+**Scenario**: Developers merge malformed SQL, or try to iterate over a Lazy Collection outside a valid session bounds (`LazyInitializationException`). 
+
+**The Aegis Advantage**: Mapped as a `DataAccessProgrammingException` (`PROGRAMMING_ERROR`). Aegis knows retrying a syntax bug is hopeless, aborting instantly. It also triggers `ERROR` log severity bindings differently from transient faults (which are `WARN`), ensuring observability tools immediately trigger critical deployment alerts.
+
+### Limitations & Gotchas
+
+1. **Self-Invocation Bypasses Constraints:** If a `@Service` bean calls one of its own inner methods natively (e.g., `this.updateSomething()`), the call bypasses the Spring Proxy completely.
+2. **Public Methods Only:** The automated AOP pointcuts generally only intercept `public` method signatures. Internal database calls will leak raw exceptions. 
+3. **Double Advice Conflict:** If your `@Repository` or `@Service` classes are already highly advised or managed using drastically custom transaction boundaries, Aegis might not sit outside your transaction boundary as seamlessly. 
+
+---
+
+## λ Functional Error Handling (Vavr)
+
+Aegis now natively supports functional, monadic error handling using the **Vavr** library (`io.vavr:vavr`). 
+
+Instead of waiting for an exception to be thrown out of the call stack (which forces consumers to wrap your services in `try/catch` blocks), you can simply specify your Service or Repository method to return an `Either<DataOperationException, T>`. 
+
+Aegis will auto-detect the method signature via Reflection. If an exception is intercepted inside the proxy (or from a deferred `@Transactional` commit), Aegis quietly suppresses the throw and natively maps the response into an `Either.left(DataOperationException)`.
+
+**Example:**
+
+```java
+import io.vavr.control.Either;
+import io.aegis.db.resilience.domain.DataOperationException;
+
+@Service
+public class UserService {
+    private final UserRepository repository;
+    
+    @Transactional
+    public Either<DataOperationException, User> registerUser(String email) {
+        // Return Right assuming success.
+        // If a UNIQUE SQL constraint fails during the commit flush,
+        // Aegis intercepts it and safely converts it to Either.left(Ex).
+        return Either.right(repository.save(new User(email)));
+    }
+}
+```
+
+---
+
+## 🏆 Best Practices: Handling Exceptions
+
+When a database exception is thrown in an application using Aegis, it is intercepted, classified, and transformed before reaching your business logic. 
+
+### 1. Catch Domain Exceptions, Not Spring Exceptions
+Stop catching `org.springframework.dao.DataAccessException`. Aegis guarantees that these will never escape. Instead, catch the Aegis domain hierarchy for precise control.
+
+### 2. Centralize Transport Mapping
+For generic errors, use a global `@ControllerAdvice` (Spring Web) or Interceptors (gRPC) to map domain exceptions to transport-specific codes. 
+
+### 3. Summary of Exception Strategies
+
+| Exception Type | Application Strategy |
+| :--- | :--- |
+| `DataIntegrityException` | **Handle in Service/Controller**: Map to 400/409. Represents a client error. |
+| `DataNotFoundException` | **Map Globally**: Usually represents a 404. |
+| `DataConflictException` | **Handle in Service**: Prompt user to refresh state (Optimistic Locking). |
+| `TransientDataOperationException` | **Ignore**: Aegis has already retried this. If it reaches you, all retries failed. |
+| `DataUnavailableException` | **Alerting**: Represents DB downtime. Let it bubble up to a 503. |
+
+### 4. Key Rules
+*   **Don't Retry Manually**: If an exception is retriable (Deadlock/Timeout), Aegis has already performed exponential backoff.
+*   **Rely on Observability**: No need to log exceptions manually. Aegis records Micrometer metrics and OTel span events automatically.
+*   **Proxy Boundaries**: Ensure calls are made across bean boundaries. Internal calls (`this.xxx()`) bypass the AOP proxy.
+
+---
+
+## Prerequisites & Core Dependencies
+
+Before including Aegis in your project, ensure your environment meets the minimum requirements.
+
+### System Requirements
+- **Java 21+** (The project toolchain is strictly enforced at JDK 21)
+-- **Spring Boot 3.3.x** or higher
+
+### Transitive Dependencies
+When you add the Aegis starter to your project, it will implicitly pull in the following required libraries:
+- `org.springframework.boot:spring-boot-starter-aop`
+- `org.springframework.boot:spring-boot-starter-data-jpa`
+- `org.springframework.retry:spring-retry`
+- `io.vavr:vavr`
+- `io.micrometer:micrometer-registry-prometheus`
+- `io.opentelemetry:opentelemetry-api`
 
 ---
 
@@ -196,283 +314,18 @@ Aegis is engineered for high-performance, bank-grade applications using a premiu
 *   **🛡️ High-Precedence AOP**: Tuned ordering ensures Aegis captures failures *outside* the transaction commit phase.
 *   **📊 Low-Overhead Metrics**: Powered by Micrometer and Prometheus for real-time fleet observability.
 *   **🌍 Cloud-Native Tracing**: Native OpenTelemetry integration for distributed tracing and fault analysis.
+*   **🛠️ H2 Database Support**: Fully supported for local development and testing. Standard ANSI codes are correctly classified.
 
 ---
 
-### How it Works: The Execution Flow
-
-```mermaid
-sequenceDiagram
-    participant User as Consumer
-    participant Interceptor as Aegis Interceptor
-    participant Target as Repository/Service
-    participant Classifier as Exception Classifier
-    participant Metrics as Observability (Metrics/Spans)
-
-    User->>Interceptor: invoke(method)
-    loop Retry Loop
-        Interceptor->>Target: proceed()
-        alt Success
-            Target-->>Interceptor: result (T or Either.Right)
-        else DB Exception Thrown
-            Target-->>Classifier: catch(Throwable)
-            Classifier-->>Classifier: Identify SQLState/Vendor Code
-            Classifier-->>Interceptor: return DataOperationException
-            Interceptor->>Metrics: record(Ex, Repository, Method)
-            Interceptor-->>Interceptor: Evaluate RetryPolicy
-        end
-    end
-    
-    Interceptor-->>User: return Object Or Either.Left(Ex)
-```
-
-### Key Components
-
-*   **`DatabaseResilienceInterceptor`**: The "brain" of the system. It manages the retry loop, coordinates classification, and handles the functional return type conversion.
-*   **`DefaultDatabaseExceptionClassifier`**: The "translator." It uses Spring's `SQLExceptionTranslator` and SQLState matching to ensure the library is database-agnostic.
-*   **`DatabaseOperationMetrics`**: The "eye." It automatically publishes Micrometer gauges and OpenTelemetry spans for every fault.
-
-### Why use this instead of standard Spring `@Retryable`?
-Aegis is **Database-Aware**. It knows the difference between a `Deadlock` (which should be retried) and a `Unique Violation` (which should never be retried). It provides the exact context of the database failure within its domain exceptions, making it far superior for data-intensive applications.
-
 ---
 
-## Deep Dive: How It Works & Limitations
+## 🏆 Best Practices: Retries & Idempotency
 
-Because Aegis deeply integrates with Spring AOP, it is useful to understand exactly how it handles common database lifecycle behaviors and where it might fall short.
+While Aegis automatically retries transient failures, you should ensure that your repository methods are **idempotent** or **atomic**.
 
-### Common Use Cases & Exception Handling
-
-Aegis natively parses a comprehensive suite of errors. Here are the core use cases and how Aegis tackles them:
-
-#### 1. Data Integrity Violations & The `@Transactional` Commit Boundary
-**Scenario**: Inserting a user where an email address triggers a database-level `UNIQUE` constraint violation.
-Often when using JPA or Hibernate, a call to `repository.save()` doesn't actually hit the database right away due to optimization and caching (the "lazy flush"). The `UNIQUE` constraint exception is instead thrown by the `@Transactional` wrapper during the **commit phase** as the method is exiting, often surfacing as a nested and tangled `TransactionSystemException`.
-
-```java
-@Service
-public class UserService {
-    @Transactional
-    public User registerUser(String email) {
-        // The unique constraint fault typically fires implicitly at method exit.
-        return repository.save(new User(email));
-    }
-}
-
-// In your calling layer (e.g. Controller):
-try {
-    userService.registerUser("duplicate@test.com");
-} catch (DataIntegrityException ex) {
-    if (ex.violationType() == DataIntegrityException.ViolationType.UNIQUE) {
-        return ResponseEntity.status(409).body("Email already exists.");
-    }
-}
-```
-**The Aegis Advantage**: Because Aegis explicitly forces its AOP precedence very high (`Ordered.LOWEST_PRECEDENCE - 200`), it sits *outside* the Spring `@Transactional` wrapper. When the transaction commit fails, the Aegis interceptor catches the tangled `TransactionSystemException`, extracts the root cause (the SQL Unique constraint), maps it to a `DataIntegrityException(UNIQUE)`, and safely hands it down to the caller, completely hiding the JPA delayed flush timings.
-
-#### 2. Transient Operations & Implicit Deadlocks
-**Scenario**: Two concurrent threads try to lock the same database rows in exact opposite orders. The database forcefully kills one transaction, producing a `DeadlockLoserDataAccessException` (SQL State `40P01`).
-
-```java
-@Service
-public class OrderService {
-    @Transactional
-    public void processOrder(Order order) {
-        // If thread A locks Payment then Inventory, 
-        // and thread B locks Inventory then Payment, a deadlock exception is thrown.
-        inventoryRepository.deduct(order.getItems());
-        paymentRepository.charge(order.getAmount());
-    }
-}
-```
-**The Aegis Advantage**: Instead of immediately returning a generic 500 error, Aegis identifies the deadlock as a `TransientDataOperationException`. Based on your `@RetryPolicy`, Aegis intercepts the exception, automatically applies a backoff window, and silently **re-executes the method**. If the retry succeeds, the consumer never knows the deadlock happened.
-
-#### 3. Optimistic Locking Conflicts
-**Scenario**: When utilizing JPA `@Version` optimistic locking, two isolated users update an identical resource simultaneously, triggering a `StaleObjectStateException` or `OptimisticLockingFailureException`.
-
-```java
-@Entity
-public class Product {
-    @Id private UUID id;
-    @Version private Long version; // Optimistic Lock marker
-    private int stock;
-}
-
-@Service
-public class InventoryService {
-    @Transactional
-    public void updateStock(UUID productId, int newStock) {
-        Product p = repository.findById(productId).orElseThrow();
-        p.setStock(newStock);
-        // If the database version advanced since findById(), JPA throws here.
-        repository.save(p);
-    }
-}
-
-// In your calling layer (e.g. Controller), manually throw to user:
-try {
-    inventoryService.updateStock(id, 5);
-} catch (DataConflictException ex) {
-    throw new ResponseStatusException(HttpStatus.CONFLICT, "Data modified by someone else. Please refresh.");
-}
-```
-**The Aegis Advantage**: Aegis strictly distinguishes between transient lock delays and optimistic cache staleness. Stale entities are mapped accurately to a `DataConflictException` (`CONFLICT`) which is explicitly **non-retryable**. Trying to retry an optimistic lock blindly creates an infinite loop; Aegis knows this and predictably skips the retry logic, forcing the consumer to handle pulling fresh state.
-
-#### 4. The "Missing Data" Matrix
-**Scenario**: Trying to fetch a lazy proxy with `getReferenceById()` throws a deep `EntityNotFoundException`. Or, using a `JdbcTemplate` to fetch a single object for a missing record throws an `EmptyResultDataAccessException`.
-
-```java
-@Service
-public class ReportService {
-    public Report getReport(UUID id) {
-        // Without Aegis, this throws a JPA EntityNotFoundException
-        // Aegis intercepts and transforms it to DataNotFoundException
-        return reportRepository.getReferenceById(id);
-    }
-}
-```
-**The Aegis Advantage**: Web and routing layers shouldn't need to know the database mapping engine used underneath. Aegis neatly collapses *all* vendor-specific persistence missing-data exceptions into a single consistent `DataNotFoundException`.
-
-#### 5. Network Downtime & Connection Exhaustion
-**Scenario**: A momentary routing blip causes the database to drop connections, or the Hikari Connection Pool hits maximum capacity. The system throws a `CannotGetJdbcConnectionException`.
-
-```java
-@Service
-public class SyncService {
-    public void executeBatchSync() {
-        // If DB is offline, Hikari fails to obtain a connection.
-        // Aegis intercepts, wraps as DataUnavailableException,
-        // and retries using exponential back-off hoping the DB recovers.
-        repository.saveAll(fetchNewData());
-    }
-}
-```
-**The Aegis Advantage**: Aegis marks this correctly as a `DataUnavailableException` (`UNAVAILABLE`). Because it knows connection exhaustion is usually a spike, this exception type invokes exponential backoff retry behaviour automatically, smoothing out instantaneous latency blips before throwing structural errors.
-
-#### 6. Programming Faults & Bad Deployments
-**Scenario**: Developers merge malformed SQL, or try to iterate over a Lazy Collection outside a valid session bounds (`LazyInitializationException`). 
-
-```java
-@Service
-public class ExportService {
-    public void exportData(UUID userId) {
-        User u = repository.findWithoutJoiningRoles(userId);
-        
-        // Accessing a detached lazy collection outside an active session
-        // throws LazyInitializationException.
-        // Aegis intercepts and throws DataAccessProgrammingException immediately!
-        int roleCount = u.getRoles().size(); 
-    }
-}
-```
-**The Aegis Advantage**: Mapped as a `DataAccessProgrammingException` (`PROGRAMMING_ERROR`). Aegis knows retrying a syntax bug is hopeless, aborting instantly. It also triggers `ERROR` log severity bindings differently from transient faults (which are `WARN`), ensuring observability tools immediately trigger critical deployment alerts.
-
-### Limitations & Gotchas
-
-Since Aegis relies on standard Spring AOP proxies, there are certain scenarios where it will **not** work or requires care:
-
-1. **Self-Invocation Bypasses Constraints:** If a `@Service` bean calls one of its own inner methods natively (e.g., `this.updateSomething()`), the call bypasses the Spring Proxy completely. Therefore, Aegis will not intercept or map the database exceptions originating from that inner call. Ensure resilience mappings are happening across proper bean boundaries.
-2. **Public Methods Only:** The automated AOP pointcuts generally only intercept `public` method signatures. Internal, protected, or package-private database calls will leak raw exceptions. 
-3. **Double Advice Conflict:** If your `@Repository` or `@Service` classes are already highly advised or managed using drastically custom transaction boundaries or specialized `TransactionManager`s, Aegis might not sit outside your transaction boundary as seamlessly. 
-4. **Transaction Rollback Expectations:** If Aegis *retries* an operation, it re-invokes the entire target method. If that method initiates a nested, dirty database state that wasn't rolled back cleanly before the retry triggers, you may experience collateral side effects. Always ensure that the operations Aegis intends to retry are functionally idempotent or safely bounded within cleanly rolling-back transaction boundaries.
-
----
-
-## Functional Error Handling (Vavr)
-
-Aegis now natively supports functional, monadic error handling using the **Vavr** library (`io.vavr:vavr`). 
-
-Instead of waiting for an exception to be thrown out of the call stack (which forces consumers to wrap your services in ugly `try/catch` blocks or use global `@ControllerAdvice`), you can simply specify your Service or Repository method to return an `Either<DataOperationException, T>`. 
-
-Aegis will auto-detect the method signature via Reflection. If an exception is intercepted inside the proxy (or from a deferred `@Transactional` commit), Aegis quietly suppresses the throw and natively maps the response into an `Either.left(DataIntegrityException)`.
-
-**Example:**
-
-```java
-import io.vavr.control.Either;
-import io.aegis.db.resilience.domain.DataOperationException;
-
-@Service
-public class UserService {
-    private final UserRepository repository;
-    
-    @Transactional
-    public Either<DataOperationException, User> registerUser(String email) {
-        // Return Right assuming success.
-        // If a UNIQUE SQL constraint fails during the commit flush,
-        // Aegis intercepts it and safely converts it to Either.left(Ex).
-        return Either.right(repository.save(new User(email)));
-    }
-}
-
-// In the Caller, exception handling becomes purely functional!
-userService.registerUser("duplicate@test.com")
-    .peek(user -> System.out.println("Success! " + user.getId()))
-    .peekLeft(ex -> {
-        if (ex instanceof DataIntegrityException die) {
-            System.err.println("Database constraint uniquely flagged: " + die.violationType());
-        }
-    });
-```
-
----
-
-## Best Practices: Handling Exceptions
-
-When a database exception is thrown in an application using Aegis, it is intercepted, classified, and transformed before reaching your business logic. 
-
-### 1. Catch Domain Exceptions, Not Spring Exceptions
-Stop catching `org.springframework.dao.DataAccessException`. Aegis guarantees that these will never escape. Instead, catch the Aegis domain hierarchy for precise control:
-
-```java
-try {
-    productService.create(new Product("SKU-123"));
-} catch (DataIntegrityException ex) {
-    if (ex.violationType() == ViolationType.UNIQUE) {
-        return ResponseEntity.status(409).body("SKU already exists");
-    }
-} catch (DataNotFoundException ex) {
-    return ResponseEntity.status(404).body("Product not found");
-}
-```
-
-### 2. Centralize Transport Mapping
-For generic errors, use a global `@ControllerAdvice` (Spring Web) or Interceptors (gRPC) to map domain exceptions to transport-specific codes. This keeps your service logic focused on business rules.
-
-### 3. Summary of Exception Strategies
-
-| Exception Type | Application Strategy |
-| :--- | :--- |
-| `DataIntegrityException` | **Handle in Service/Controller**: Map to 400/409. Represents a client error. |
-| `DataNotFoundException` | **Map Globally**: Usually represents a 404. |
-| `DataConflictException` | **Handle in Service**: Prompt user to refresh state (Optimistic Locking). |
-| `TransientDataOperationException` | **Ignore**: Aegis has already retried this. If it reaches you, all retries failed. |
-| `DataUnavailableException` | **Alerting**: Represents DB downtime. Let it bubble up to a 503. |
-
-### 4. Key Rules
-*   **Don't Retry Manually**: If an exception is retriable (Deadlock/Timeout), Aegis has already performed exponential backoff.
-*   **Rely on Observability**: No need to log exceptions manually. Aegis records Micrometer metrics and OTel span events automatically.
-*   **Proxy Boundaries**: Ensure calls are made across bean boundaries. Internal calls (`this.xxx()`) bypass the AOP proxy.
-
----
-
-
-## Prerequisites & Core Dependencies
-
-Before including Aegis in your project, ensure your environment meets the minimum requirements.
-
-### System Requirements
-- **Java 21+** (The project toolchain is strictly enforced at JDK 21)
-- **Spring Boot 3.3.x** or higher
-
-### Transitive Dependencies
-When you add the Aegis starter to your project, it will implicitly pull in the following required libraries (via Gradle `api` configurations). If you are adapting or compiling Aegis manually without its `build.gradle`, you MUST include these in your project:
-- `org.springframework.boot:spring-boot-starter-aop` (For evaluating interceptor bounds)
-- `org.springframework.boot:spring-boot-starter-data-jpa` (For persistence exception hierarchies)
-- `org.springframework.retry:spring-retry` (For exponential backoff mechanics)
-- `io.vavr:vavr` (For functional `Either` error handling)
-- `io.micrometer:micrometer-registry-prometheus` & `spring-boot-starter-actuator` (For recording operation metrics)
-- `io.opentelemetry:opentelemetry-api` (For span tracing on faults)
+*   **Idempotency**: Retrying a method that triggers side effects (like sending an email) could lead to duplicates. Use Aegis primarily for pure persistence operations.
+*   **Atomicity**: Always wrap your retryable operations in `@Transactional`. Since Aegis sits *outside* the transaction boundary, it ensures a failed transaction is completely rolled back before a fresh one is started on the next attempt.
 
 ---
 
@@ -511,9 +364,6 @@ cd aegis-db-resilience
 ./gradlew test                # all tests including Testcontainers IT (requires Docker)
 ./gradlew jar                 # produces build/libs/aegis-db-resilience-*.jar
 ```
-
-> **JDK note:** the Gradle daemon is pinned to JDK 21 via `gradle.properties`
-> (`org.gradle.java.home`). Update that path if your JDK 21 is installed elsewhere.
 
 ---
 
@@ -875,3 +725,17 @@ aegis-db-resilience/
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
 Copyright (c) 2026 Sumit Srivastava.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! If you find a bug or have a feature request, please open an issue or submit a pull request.
+
+1. Fork the repository.
+2. Create your feature branch (`git checkout -b feature/amazing-feature`).
+3. Commit your changes (`git commit -m 'Add amazing feature'`).
+4. Push to the branch (`git push origin feature/amazing-feature`).
+5. Open a Pull Request.
+
+Please ensure all tests pass (`./gradlew test`) before submitting.
